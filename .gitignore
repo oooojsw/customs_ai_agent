@@ -1,0 +1,14 @@
+# 忽略环境配置文件（包含敏感 Key，绝对不能上传！）
+.env
+
+# 忽略 Python 编译产生的垃圾文件
+__pycache__/
+*.py[cod]
+
+# 忽略系统生成的文件
+.DS_Store
+Thumbs.db
+
+# 忽略 VS Code 配置
+.vscode/
+UsersZhuanZnpm-cache/

@@ -1,0 +1,75 @@
+这份报告详细梳理了项目当前的开发进度、已实现的核心功能、技术亮点以及目前遗留的唯一技术难点。
+
+📑 智慧口岸自动化报关辅助决策系统 (v2.1) - 开发进度报告
+
+生成日期：2023-12-11
+当前版本：v2.1 Beta
+总体状态：🟡 核心功能完备，体验局部有瑕疵
+核心架构：FastAPI + LangChain (LangGraph) + DeepSeek V3 + Local RAG
+
+1. 核心模块完成情况
+模块	功能名称	状态	详细说明
+Module A	智能审单 (Audit)	🟢 完美	- RAG 规则引擎：已实现，能加载 risk_rules.json 和对应的 .txt 知识库。<br>- 流式输出：UI 步骤条（Loading -> 结果）动画流畅。<br>- 逻辑：能够准确识别高风险单据（如洋垃圾、价格异常）。
+Module B	法规咨询 (Chat)	🟡 可用但卡顿	- 功能：对话逻辑正常，能正确调用 search_customs_regulations 工具查库。<br>- 缺陷：流式输出失效。目前表现为“伪流式”（用户输入后需等待较长时间，然后整段文字一次性显示），未能实现“打字机”效果。<br>- 原因：LangGraph 封装层与底层网络客户端（httpx）在异步环境下的缓冲冲突。
+Module C	智能建议 (Report)	🟢 完美	- 架构：采用 Planner-Executor（规划-执行）模式。<br>- DeepSeek 特性：成功应用 Context Caching，在生成长报告时大幅降低成本并保持上下文连贯。<br>- 交互：实现了“目录规划 -> 逐章生成”的呼吸灯动画。<br>- 联动：实现了“引用审单数据”的一键传参功能。
+2. 关键技术突破 (Technical Highlights)
+
+DeepSeek 深度集成：
+
+成功对接 DeepSeek-V3 模型，利用其长窗口特性处理复杂的报关单据上下文。
+
+在 Module C 中实现了基于系统 SOP（标准作业程序）的自动化目录规划。
+
+全局单例架构 (Singleton Pattern)：
+
+通过 src/main.py 的 lifespan 管理，实现了 Agent 的启动时加载。
+
+效果：接口响应速度从 3秒+ 降低至 毫秒级（消除了重复加载 RAG 索引的开销）。
+
+RAG 知识库容错机制：
+
+解决了 Windows 环境下 FAISS 向量库路径兼容性问题（中文路径支持）。
+
+实现了“索引损坏自动重建”的自愈逻辑。
+
+前端交互升级：
+
+重构了 UI，增加了“建议模块”的左右分栏布局。
+
+实现了复杂的 SSE（Server-Sent Events）自定义协议，支持 planning（规划中）、step_start（章节开始）、step_stream（内容流）等多种状态。
+
+3. 遗留问题与风险 (Known Issues)
+🔥 核心痛点：Module B (Chat) 的流式传输
+
+现象：在点击发送后，前端长时间转圈，然后突然显示全部回复。
+
+技术根因：
+
+我们坚持使用了 create_agent (LangGraph) 来保持架构的“正统性”和工具调用的稳定性。
+
+但是，LangGraph 的内部调度机制（Graph Execution Loop）在处理 stream_mode="messages" 时，会等待工具执行完毕或 LLM 输出完整块后才释放数据。
+
+加上国内复杂的网络环境（Proxy/SSL），导致底层的 httpx 异步流被阻塞。
+
+当前妥协：为了保证系统不崩溃（503 错误），我们回退到了一个“能跑但流式不流畅”的稳定版本。
+
+4. 下一步计划 (Next Steps)
+
+短期（Code Freeze）：
+
+暂时冻结 Module B 的代码修改，优先保证系统的稳定性，确保演示时不会崩溃。
+
+Module A 和 Module C 表现优异，可作为演示的核心亮点。
+
+中期（架构微调）：
+
+考虑将 Module B 的底层实现从 create_agent 迁移到像 Module C 那样的 “原生 LLM 直连 + 手动工具调用” 模式。
+
+实践证明（Module C 的成功），手动控制循环比使用 LangGraph 的黑盒封装更能保证流式输出的流畅度。
+
+数据增强：
+
+扩充 config/sop_process.txt，让生成的建议书更加符合真实海关业务规范。
+
+总结：
+系统已具备交付演示的能力。虽然咨询功能的“打字机效果”暂时缺席，但其核心的查库准确性和业务逻辑是完整的。而新增的智能建议书生成功能体验极佳，足以弥补对话流式的遗憾。
