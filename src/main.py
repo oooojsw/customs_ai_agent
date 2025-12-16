@@ -1,5 +1,8 @@
 import sys
 import os
+import webbrowser
+import threading
+import time
 from contextlib import asynccontextmanager
 
 # 路径修正
@@ -37,6 +40,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ [System] Report Agent 初始化失败: {e}")
         app.state.reporter = None
+    
+    # 3. 【新增】自动打开网页界面
+    def open_browser():
+        # 等待一小段时间确保服务已启动
+        time.sleep(2)
+        
+        # 检查是否已经有浏览器窗口打开了该页面
+        # 这里使用简单的启发式方法：尝试打开本地服务器地址
+        # 如果用户已经手动打开，webbrowser 可能会重用现有标签页
+        url = "http://localhost:8000"
+        
+        # 同时尝试打开本地文件作为备选
+        local_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "index.html")
+        
+        print(f"🌐 [System] 正在打开网页界面...")
+        print(f"   📍 服务器地址: {url}")
+        print(f"   📍 本地文件: file://{local_file}")
+        
+        try:
+            # 优先尝试打开本地服务器地址
+            webbrowser.open(url, new=0, autoraise=True)
+            print(f"✅ [System] 已尝试打开浏览器，访问 {url}")
+        except Exception as e:
+            print(f"⚠️  [System] 打开浏览器失败: {e}")
+            try:
+                # 备选方案：打开本地文件
+                webbrowser.open(f"file://{local_file}", new=0, autoraise=True)
+                print(f"✅ [System] 已尝试打开本地文件")
+            except Exception as e2:
+                print(f"❌ [System] 所有打开网页的尝试都失败了: {e2}")
+    
+    # 在新线程中打开浏览器，避免阻塞主线程
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
     
     yield  # 服务运行中...
     
