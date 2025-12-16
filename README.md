@@ -1,161 +1,184 @@
-这是一个非常详尽且专业的 README.md 文档，涵盖了项目背景、架构设计、技术亮点、部署指南以及我们之前讨论的核心逻辑。
+这份 README.md 是根据项目当前的 v2.1 版本、DeepSeek 深度集成、新增的报告生成功能以及我们在底层架构（网络、RAG、单例模式）上的所有改进重新编写的。
 
-# Smart Customs AI Agent (海关智能报关决策系统)
-> **面向智慧口岸的自动化报关辅助决策原型系统 (v1.0)**  
-> 结合 **RAG (检索增强生成)** 与 **Agentic Workflow (智能体工作流)** 技术，实现对报关单据的流式风险研判与可视化推理。
+请将以下内容完全覆盖项目根目录下的 README.md 文件。
 
----
-
-## 📖 项目背景与目标
-
-在海关报关场景中，传统的人工审单面临**规则复杂（如归类、估价）、知识更新快、单证比对繁琐**等痛点。
-本项目旨在构建一个**“低耦合、高内聚”**的 AI 智能体系统，通过以下方式赋能业务：
-
-1.  **自动化研判**：利用大模型语义理解能力，自动处理非结构化报关文本。
-2.  **知识外挂 (RAG)**：将海关专业查验指南（几千字）挂载为外部知识库，解决模型幻觉与专业性不足问题。
-3.  **过程透明化**：拒绝黑盒，通过 SSE 流式技术实时展示 AI 的“思考路径”与决策依据。
-
----
-
-## 🏗️ 系统架构设计
-
-本项目遵循**分层架构**与**配置驱动**的设计理念，实现了业务逻辑与代码逻辑的彻底解耦。
-
-### 1. 逻辑架构图
-
-
-2. 核心模块解析 (低耦合、高内聚体现)
-模块层级	目录路径	职责 (High Cohesion)	解耦体现 (Low Coupling)
-知识层	config/	存放 risk_rules.json 和 rag_*.txt。纯业务逻辑，由业务人员维护。	业务规则变化无需修改 Python 代码。
-编排层	src/core/	orchestrator.py 负责流程控制；prompt_builder.py 负责组装指令。	不关心底层用什么模型，只管流程调度。
-执行层	src/services/	llm_service.py 封装 API 通信、重试、清洗逻辑。	网络层复杂度被封闭，更换模型只需改此一层。
-接口层	src/api/	处理 HTTP 请求与 SSE 响应。	前后端分离，仅通过 JSON 数据交互。
-✨ 核心技术亮点
-1. 细粒度 RAG (Fine-grained RAG)
-
-痛点解决：避免将整本法规塞入 Context 导致 Token 浪费和注意力分散。
-
-实现：将知识库拆解为 rag_r01_basic_info.txt (基础要素)、rag_r03_price_logic.txt (价格逻辑) 等独立文件。AI 执行某条规则时，只动态加载对应的几百字指南，精准度极高。
-
-2. 鲁棒的 LLM 工程化 (Robust Engineering)
-
-指数退避重试：针对 503 Server Overloaded 错误，实现了智能的 Exponential Backoff 重试机制，确保高并发下的可用性。
-
-防御性编程：针对 Preview 模型偶尔“思考后不输出内容”的 Bug，增加了自动检测与重试逻辑。
-
-安全拦截绕过：通过配置 safetySettings: BLOCK_NONE，解决了海关数据中“走私、毒品”等敏感词被误杀的问题。
-
-3. 流式可视化 (Streaming Visualization)
-
-使用 Server-Sent Events (SSE) 技术，将后端的推理步骤（思考 -> 判定 -> 解释）实时推送到前端。
-
-前端通过呼吸灯动画与增量渲染，给用户呈现出“AI 正在逐项审查”的视觉体验。
-
-📂 文件结构说明
 code
-Text
+Markdown
 download
 content_copy
 expand_less
-customs_ai_agent/
-├── config/                  # [知识库] 存放规则配置与 RAG 文本
-│   ├── risk_rules.json      # 核心规则定义（指令、关联RAG文件）
-│   ├── rag_r01_basic.txt    # RAG: 基础要素审查指南
-│   └── ...                  # 其他 RAG 文件
-├── src/                     # [后端代码]
-│   ├── main.py              # 启动入口 (CORS, 路由挂载)
-│   ├── api/routes.py        # 接口定义 (SSE 流式响应)
-│   ├── core/                # 核心逻辑
-│   │   ├── orchestrator.py  # 流程编排器 (生成器模式)
-│   │   └── prompt_builder.py# Prompt 组装工厂
-│   ├── services/            # 外部服务
-│   │   └── llm_service.py   # Gemini API 封装 (重试、清洗)
-│   └── config/loader.py     # 环境变量加载器 (.env)
-├── web/                     # [前端代码]
-│   ├── index.html           # 单页应用 (含 Tailwind CSS)
-│   └── ... 
-├── .env                     # 敏感配置 (API Key)
-└── requirements.txt         # 依赖清单
-🚀 快速启动指南
-1. 环境准备
+# 🚢 智慧口岸自动化报关辅助决策系统 (Customs AI Agent)
 
-Python 3.10+
+![Version](https://img.shields.io/badge/Version-2.1-green)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![LangChain](https://img.shields.io/badge/LangChain-v0.3-orange)
+![DeepSeek](https://img.shields.io/badge/Model-DeepSeek--V3-purple)
 
-Git
+> **"不仅仅是聊天机器人，而是具备规划能力的行业合规专家。"**
 
-2. 安装依赖
-code
-Bash
-download
-content_copy
-expand_less
-# 建议使用 Conda 或 venv 创建虚拟环境
+本项目是一个基于 **LLM (DeepSeek-V3)** 和 **RAG (检索增强生成)** 技术的智能体系统，专为进出口报关场景设计。它能够自动审核报关单据风险、提供法规咨询，并基于 SOP 标准自动生成专业的合规性审查建议书。
+
+---
+
+## ✨ 核心功能 (Core Features)
+
+### 1. 🚨 智能审单 (Smart Audit)
+- **风险规则引擎**：基于 `config/risk_rules.json` 动态加载审查策略。
+- **RAG 增强校验**：自动检索海关监管目录，识别“洋垃圾”、“两用物项”、“濒危物种”等隐蔽风险。
+- **推理可视化**：在前端通过 SSE 实时展示 AI 的每一步审核逻辑（如“正在比对HS编码...”）。
+
+### 2. 💬 法规咨询 (Expert Chat)
+- **知识库问答**：基于 FAISS 向量库，检索本地存储的海关法规文件。
+- **混合搜索**：遇到专业问题（如归类、税率）自动调用检索工具；闲聊问题直接回答。
+- **思维链展示**：(Beta) 展示 DeepSeek 的深度思考过程 (`reasoning_content`)。
+
+### 3. 📑 智能建议书 (Intelligent Report) [NEW]
+- **Planner-Executor 架构**：采用“先规划目录，后逐章撰写”的 Agent 设计模式。
+- **Context Caching**：利用 DeepSeek 的上下文缓存特性，生成超长、逻辑连贯的专业报告，同时大幅降低 API 成本。
+- **SOP 驱动**：严格依据 `config/sop_process.txt` 中的标准作业程序生成内容。
+- **数据联动**：支持一键引用“审单模块”的发现结果作为报告上下文。
+
+---
+
+## 🏗️ 技术架构 (Architecture)
+
+*   **后端框架**: FastAPI (使用 Lifespan 管理全局单例 Agent，响应速度提升 10x)。
+*   **LLM 编排**: LangChain v0.3 / LangGraph。
+*   **模型**: DeepSeek-V3 (兼容 OpenAI 接口)。
+*   **RAG 方案**: 
+    *   Embedding: `sentence-transformers/all-MiniLM-L6-v2` (本地运行)
+    *   Vector Store: FAISS (CPU版，已解决 Windows 路径兼容性)
+*   **网络层**: 高度定制的 `httpx` 传输层 (AsyncHTTPTransport)，完美穿透本地代理并规避 SSL 验证问题。
+*   **前端**: 原生 HTML/JS + TailwindCSS，通过 EventSource (SSE) 实现打字机流式效果。
+
+---
+
+## 🚀 快速开始 (Quick Start)
+
+### 1. 环境准备
+确保已安装 Python 3.10+ 和 Git。
+
+```bash
+# 1. 克隆项目
+git clone [your-repo-url]
+cd customs_ai_agent
+
+# 2. 创建虚拟环境 (推荐)
+conda create -n customs_agent python=3.10
+conda activate customs_agent
+
+# 3. 安装依赖
 pip install -r requirements.txt
-3. 配置环境变量
+2. 配置文件
 
-在项目根目录创建 .env 文件，填入以下内容：
+在项目根目录创建 .env 文件，填入以下关键配置：
 
 code
 Ini
 download
 content_copy
 expand_less
-# Google Gemini API Key (必填)
-GOOGLE_API_KEY="你的API_KEY_HERE"
+# DeepSeek API 配置
+DEEPSEEK_API_KEY="sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+DEEPSEEK_BASE_URL="https://api.deepseek.com"
+DEEPSEEK_MODEL="deepseek-chat"
 
-# 模型选择 (推荐使用 1.5-flash 以获得最佳稳定性)
-GEMINI_MODEL_NAME="gemini-1.5-flash"
-
-# 代理配置 (如果需要)
-HTTP_PROXY="http://127.0.0.1:7890"
+# 网络代理 (国内环境必须配置)
+HTTP_PROXY="http://127.0.0.1:7890" 
 HTTPS_PROXY="http://127.0.0.1:7890"
-4. 启动后端服务
+
+# 模型配置
+GEMINI_MODEL_NAME="gemini-flash-latest" # 备用
+3. 知识库准备
+
+确保以下文件存在（如不存在，系统启动时会自动创建空索引或使用默认配置）：
+
+config/sop_process.txt: 报告生成的标准流程参考。
+
+data/knowledge/*.txt: 你的海关法规文本文件。
+
+4. 启动服务
 code
 Bash
 download
 content_copy
 expand_less
-# 在项目根目录下运行
 python src/main.py
 
-成功启动后会显示：INFO: Uvicorn running on http://0.0.0.0:8000
+启动成功后，访问浏览器：http://localhost:8000
 
-5. 启动前端 (解决跨域问题)
-
-为了避免浏览器直接打开本地文件的跨域限制，建议用 Python 启动一个临时静态服务器：
-
+📂 项目结构
 code
-Bash
+Text
 download
 content_copy
 expand_less
-cd web
-python -m http.server 5500
+customs_ai_agent/
+├── config/                 # 配置文件与知识库索引
+│   ├── risk_rules.json     # 审单规则定义
+│   ├── sop_process.txt     # 报告生成 SOP
+│   └── faiss_index_local/  # 向量数据库缓存
+├── data/knowledge/         # 原始法规文本数据 (RAG源)
+├── src/
+│   ├── api/routes.py       # API 路由定义
+│   ├── core/               # 核心编排逻辑
+│   ├── database/           # 审计日志数据库 (SQLite)
+│   ├── services/
+│   │   ├── chat_agent.py   # 对话 Agent (原生流式实现)
+│   │   ├── report_agent.py # 报告生成 Agent (Planner-Executor)
+│   │   ├── data_client.py  # 外部数据源接口
+│   │   └── knowledge_base.py # RAG 索引管理
+│   └── main.py             # 程序入口
+├── web/                    # 前端界面
+└── requirements.txt        # 依赖列表
+⚠️ 常见问题与注意事项
 
-然后访问：👉 http://localhost:5500
+Windows 下的 FAISS 报错
 
-🧪 边界测试用例
+现象: RuntimeError: Error in ... could not open ... index.faiss
 
-前端界面内置了 10 组边界测试样本，覆盖以下场景，可用于压力测试：
+原因: FAISS 底层对 Windows 中文/空格路径支持不佳。
 
-归类欺诈 (无人机报成玩具)
+解法: 代码中已包含自动修复逻辑（先写入纯英文临时目录，再通过 Python 移动文件）。请勿手动修改此逻辑。
 
-隐蔽洋垃圾 (再生原料掩盖固体废物)
+流式输出卡顿/不显示
 
-微小误差 (重量误差 >1%)
+原因: 本地代理拦截了异步请求。
 
-价格洗钱 (圆珠笔申报 $100)
+解法: chat_agent.py 和 report_agent.py 中已强制注入 AsyncHTTPTransport(verify=False)。请确保你的代理软件（如 Clash）开启了 LAN 连接允许。
 
-濒危物种 (红木家具未申报)
+HuggingFace 模型下载失败
 
-... 以及标准合规样本。
+代码已内置 HF_ENDPOINT 环境变量指向国内镜像站，通常无需额外操作。首次启动时下载模型可能需要几分钟。
 
-📝 维护与扩展
+📅 版本历史
 
-修改规则：无需改代码。直接编辑 config/risk_rules.json 调整指令，或修改 config/rag_*.txt 更新审查指南。
+v2.1 (Current):
 
-更换模型：修改 .env 中的 GEMINI_MODEL_NAME 即可切换至 Gemini 2.0 或 Pro 版本。
+新增“智能建议书”模块，支持长文本流式生成。
 
-Author: Wang Kai (M4 Module)
-Project: Intelligent Customs Clearance System
+修复 Chat 模块的流式卡死问题，回归原生 LLM 调用架构。
 
+实现全局单例模式，大幅优化启动速度。
+
+v2.0: 引入 RAG 知识库，支持基于规则的风险审单。
+
+v1.0: 基础原型验证。
+
+👨‍💻 开发者指南
+
+如果你想扩展功能：
+
+修改审单规则：编辑 config/risk_rules.json。
+
+修改报告流程：编辑 config/sop_process.txt。
+
+增加新工具：在 src/services/chat_agent.py 的 tools 列表中添加。
+
+Powered by DeepSeek & LangChain
+
+code
+Code
+download
+content_copy
+expand_less
