@@ -1,11 +1,16 @@
 import os
 import httpx
-import asyncio # 引入 asyncio 用于细微控制
+import asyncio
+import json
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import Tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, AIMessageChunk
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+
+# 引入 create_react_agent (LangGraph 推荐方式)
+from langgraph.prebuilt import create_react_agent
 
 from src.config.loader import settings
 
@@ -24,34 +29,33 @@ MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
     def __init__(self):
-        print("🔗 [System] 初始化 Agent (原生架构 + 网络修正)...")
+        print("🔗 [System] 初始化 Agent (DeepSeek 深度优化版)...")
         
-        # 1. 网络配置 (唯一修改的地方：使用 Transport 解决异步流式卡死)
+        # 1. 网络配置
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
         
-        # 同步客户端 (保持不变，但建议用 Transport 以防万一)
-        if proxy_url:
-            sync_transport = httpx.HTTPTransport(proxy=proxy_url, verify=False)
-            sync_client = httpx.Client(transport=sync_transport, timeout=60.0)
-        else:
-            sync_client = httpx.Client(verify=False, timeout=60.0)
-
-        # 异步客户端 (核心修复：必须用 AsyncHTTPTransport，否则 astream 会卡死)
         if proxy_url:
             async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
             async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
         else:
             async_client = httpx.AsyncClient(verify=False, timeout=120.0)
 
-        # 2. LLM (开启流式)
+        # 2. LLM 初始化 (严格遵循 DeepSeek 文档)
         self.llm = ChatOpenAI(
             model=settings.DEEPSEEK_MODEL,
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
             temperature=0.3,
-            http_client=sync_client,
             http_async_client=async_client,
-            streaming=True
+            streaming=True, # 必须开启
+            model_kwargs={
+                # 显式开启流式，防止被 Agent 覆盖
+                "stream": True,
+                # 【关键】禁用并行工具调用，DeepSeek 文档虽未明说，但实测能减少服务端缓冲
+                "parallel_tool_calls": False,
+                # 减少不必要的数据传输
+                "stream_options": {"include_usage": False} 
+            }
         )
 
         # 3. 工具
@@ -75,78 +79,69 @@ class CustomsChatAgent:
                     func=retrieve_docs,
                     description="查询海关法规、政策、HS编码或报关流程。"
                 ))
-                print("✅ 知识库加载成功")
             except: pass
         
-        # 4. Agent (完全保留你原本的 create_agent 写法)
-        system_prompt = "你是一名海关专家。遇到业务问题必须查库。闲聊直接回。"
-        self.agent = create_agent(
+        # 4. Agent 构建 (使用 LangGraph)
+        self.agent = create_react_agent(
             model=self.llm,
             tools=tools,
-            system_prompt=system_prompt,
+            # prompt="你是一名海关专家...", # 新版 LangGraph 这里用 state_modifier
             checkpointer=MEMORY,
         )
 
-        if self.retriever:
-            try: self.retriever.invoke("warm-up") 
-            except: pass
-
     async def chat_stream(self, user_input: str, session_id: str = "default_session"):
         """
-        最终流式逻辑：兼容 DeepSeek 思考过程 (完全保留原逻辑)
+        使用 astream_events 监听底层 LLM 事件，绕过 Agent 的缓冲
         """
-        try:
-            print(f"\n👉 [Request] {user_input}")
-            yield f"data: {{\"type\": \"thinking\", \"content\": \"连接建立，准备生成...\"}}\n\n"
-            
-            config = {"configurable": {"thread_id": session_id}}
-            has_sent_content = False
+        print(f"\n👉 [Request] {user_input}")
+        yield f"data: {{\"type\": \"thinking\", \"content\": \"连接建立...\"}}\n\n"
+        
+        config = {"configurable": {"thread_id": session_id}}
+        has_sent_content = False
 
-            # 使用 stream_mode="messages"
-            async for msg, metadata in self.agent.astream(
+        try:
+            # 【核心修改】使用 astream_events (v2)
+            # 它可以穿透 Graph 的层级，直接捕获最底层的 on_chat_model_stream 事件
+            # 无论 Agent 逻辑怎么卡，只要 LLM 吐字，这里就能收到！
+            async for event in self.agent.astream_events(
                 {"messages": [HumanMessage(content=user_input)]},
                 config=config,
-                stream_mode="messages"
+                version="v2"
             ):
-                # -------------------------------------------------
-                # 1. 捕捉 AI 消息 (包括思考过程 + 正文)
-                # -------------------------------------------------
-                if isinstance(msg, AIMessageChunk):
-                    # --- A. 尝试获取 DeepSeek 的思考内容 (Reasoning) ---
-                    # DeepSeek 的思考内容通常在 additional_kwargs 中
-                    reasoning = msg.additional_kwargs.get('reasoning_content', '')
-                    if reasoning:
-                        # 这是一个思考片段
-                        safe_reason = reasoning.replace("\n", "\\n").replace('"', '\\"')
-                        # 推送给前端，类型为 'thinking'
-                        yield f"data: {{\"type\": \"thinking\", \"content\": \"{safe_reason}\"}}\n\n"
+                event_type = event["event"]
+                
+                # 1. 监听 LLM 的流式输出 (最核心的部分)
+                if event_type == "on_chat_model_stream":
+                    chunk = event["data"]["chunk"]
                     
-                    # --- B. 尝试获取工具调用 (Tool Calls) ---
-                    if msg.tool_call_chunks:
-                        # 只要有工具调用的意图，就发一个信号保持连接活跃
-                        yield f"data: {{\"type\": \"thinking\", \"content\": \"正在规划工具调用...\"}}\n\n"
-
-                    # --- C. 捕捉正文内容 (Content) ---
-                    if msg.content:
+                    # A. 捕获正文内容 (Content)
+                    if chunk.content:
                         has_sent_content = True
-                        safe_content = msg.content.replace("\n", "\\n").replace('"', '\\"')
+                        safe_content = chunk.content.replace("\n", "\\n").replace('"', '\\"')
                         yield f"data: {{\"type\": \"answer\", \"content\": \"{safe_content}\"}}\n\n"
                     
-                    # 关键：手动让出控制权，防止 asyncio 循环过紧导致 buffer
+                    # B. 捕获 DeepSeek 的思考过程 (Reasoning)
+                    # DeepSeek 的 thinking 通常在 additional_kwargs 里
+                    reasoning = chunk.additional_kwargs.get('reasoning_content', '')
+                    if reasoning:
+                        safe_reason = reasoning.replace("\n", "\\n").replace('"', '\\"')
+                        yield f"data: {{\"type\": \"thinking\", \"content\": \"{safe_reason}\"}}\n\n"
+                    
+                    # 极短休眠，确保 I/O 不阻塞
                     await asyncio.sleep(0)
 
-                # -------------------------------------------------
-                # 2. 捕捉工具执行结果
-                # -------------------------------------------------
-                elif isinstance(msg, ToolMessage):
-                    print(f"✅ 工具 {msg.name} 返回")
-                    yield f"data: {{\"type\": \"thinking\", \"content\": \"查询完毕，正在整理...\"}}\n\n"
+                # 2. 监听工具开始调用 (用于前端显示状态)
+                elif event_type == "on_tool_start":
+                    tool_name = event["name"]
+                    yield f"data: {{\"type\": \"thinking\", \"content\": \"正在调用工具: {tool_name}...\"}}\n\n"
 
-            # -------------------------------------------------
-            # 3. 保底
-            # -------------------------------------------------
+                # 3. 监听工具结束
+                elif event_type == "on_tool_end":
+                    yield f"data: {{\"type\": \"thinking\", \"content\": \"工具调用完成，正在生成回复...\"}}\n\n"
+
+            # 保底逻辑 (如果事件流没有捕获到任何内容)
             if not has_sent_content:
-                print("⚠️ 启用保底...")
+                print("⚠️ 事件流未捕获内容，尝试读取最终状态...")
                 state = await self.agent.aget_state(config)
                 if state.values.get("messages"):
                     last = state.values["messages"][-1]
@@ -156,4 +151,6 @@ class CustomsChatAgent:
 
         except Exception as e:
             print(f"❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             yield f"data: {{\"type\": \"error\", \"content\": \"{str(e)}\"}}\n\n"

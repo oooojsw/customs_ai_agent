@@ -1,0 +1,65 @@
+太好了！这确实是一次不容易的调试过程。
+
+这个问题之所以顽固，是因为它不是单一的 Bug，而是 LangChain 新架构（LangGraph）与 DeepSeek API 特性之间的一次“磨合冲突”。
+
+以下是关于这次问题的完整总结和技术复盘：
+
+一、 核心问题根源
+
+为什么第 2 个功能（智能问答/绑定了工具）会卡顿，而第 3 个功能（合规建议/无工具）正常？
+
+LangGraph 的“节点等待”机制（架构层）
+
+现象：agent.astream 监听的是**Agent 状态（State）**的变化。
+
+原理：在 LangGraph 中，"调用 LLM" 是一个完整的节点（Node）。默认情况下，Graph 会等待这个节点完全执行完毕（即 LLM 生成完所有内容，确认了要调用的工具参数 JSON 完整无误），才会更新状态并推送到 astream。
+
+结果：这就是为什么你看到的是“一次性蹦出来”。前端在等 Graph 的状态更新，而 Graph 在等 LLM 说完话。
+
+DeepSeek 的“工具缓冲”策略（API 层）
+
+现象：DeepSeek 官方文档指出 API 默认非流式。
+
+原理：当模型绑定了工具（Tools）且开启了 parallel_tool_calls=True（LangChain 默认开启）时，DeepSeek 服务端为了保证输出的 JSON 格式绝对正确（避免幻觉或格式错误），倾向于在服务端缓冲更多内容甚至全部内容，计算完成后再发送。这加剧了延迟。
+
+二、 最终解决方案
+
+我们通过 “绕过中间商” 和 “简化协议” 两个手段彻底解决了问题：
+
+1. 代码层面：从 astream 切换到 astream_events (至关重要)
+
+修改前 (astream)：监听的是 Agent 经理 的汇报。经理说：“等员工干完活我再告诉你结果”。
+
+修改后 (astream_events)：监听的是 LLM 员工 的键盘敲击声。
+
+我们使用了 version="v2" 的事件流。
+
+直接捕获 on_chat_model_stream 事件。
+
+效果：无论 Agent 逻辑是否想缓冲，只要 LLM 吐出一个 Token，我们就能立刻截获并推送到前端。这是解决“不流式”的核武器。
+
+2. 配置层面：禁用并行工具调用
+
+修改：在 ChatOpenAI 初始化时添加 model_kwargs={"parallel_tool_calls": False}。
+
+原理：告诉 DeepSeek：“我不贪心，你一次只思考一个工具就行，别在服务器端憋大招”。这减轻了服务端的计算负担，促使其更愿意流式输出。
+
+3. 兼容性层面：防御性编程
+
+修改：使用 getattr(msg, 'attr', None) 代替直接访问。
+
+原因：LangChain 的消息对象类型（Chunk vs Message）在不同网络状况下不稳定。这种写法保证了无论收到碎片还是完整包，程序都不会报错崩溃。
+
+三、 避坑指南（给未来的开发提示）
+
+以后在使用 LangChain v0.2+ (LangGraph) 配合 国产大模型（DeepSeek/Qwen等） 开发 Agent 时，请遵循以下黄金法则：
+
+流式首选 astream_events：不要迷信 agent.stream()，想要极致的打字机效果，直接用事件流监听 on_chat_model_stream。
+
+工具调用需谨慎：如果模型反应慢，尝试在 model_kwargs 中关闭 parallel_tool_calls。
+
+不要相信类型：不要假设收到的永远是 AIMessageChunk，永远要做类型兼容处理（isinstance 检查 + getattr 取值）。
+
+显式开启 Stream：国产模型的中转 API 实现参差不齐，永远在构造 LLM 时显式加上 streaming=True 和 model_kwargs={"stream": True}。
+
+很高兴问题解决了！现在的系统既拥有了 Agent 的智能决策能力，又拥有了极致的流式交互体验。

@@ -1,6 +1,6 @@
 ================================================================================
 项目所有代码文件内容汇总
-生成时间: 3.13.2 (tags/v3.13.2:4f8bb39, Feb  4 2025, 15:23:48) [MSC v.1942 64 bit (AMD64)]
+生成时间: 3.10.18 | packaged by Anaconda, Inc. | (main, Jun  5 2025, 13:08:55) [MSC v.1929 64 bit (AMD64)]
 文件总数: 23
 ================================================================================
 
@@ -224,8 +224,8 @@ from pydantic import BaseModel
 
 from src.services.data_client import DataClient
 from src.core.orchestrator import RiskAnalysisOrchestrator
-
-# 注意：这里不再导入 CustomsChatAgent 类，因为我们不需要实例化它了
+# 【新增】引入 Reporter
+from src.services.report_agent import ComplianceReporter
 
 router = APIRouter()
 
@@ -236,6 +236,10 @@ class AnalysisRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default_session"
+
+# 【新增】报告请求体
+class ReportRequest(BaseModel):
+    raw_data: str
 
 @router.post("/analyze")
 async def analyze_customs_declaration(request: AnalysisRequest):
@@ -257,15 +261,34 @@ async def chat_with_agent(body: ChatRequest, request: Request):
     """
     LangChain 对话接口 (SSE 流) - 使用全局单例模式
     """
-    # 1. 从 app.state 中获取预加载好的 Agent
     agent = getattr(request.app.state, "agent", None)
     
     if not agent:
         raise HTTPException(status_code=503, detail="AI 服务初始化失败或正在启动中，请稍后重试")
 
-    # 2. 复用同一个 Agent 实例进行对话
     return StreamingResponse(
         agent.chat_stream(body.message, body.session_id),
+        media_type="text/event-stream"
+    )
+
+# 【新增】生成报告接口
+@router.post("/generate_report")
+async def generate_compliance_report(body: ReportRequest, req: Request):
+    """
+    生成合规性建议书 (SSE 流式)
+    """
+    if not body.raw_data or len(body.raw_data.strip()) < 2:
+        raise HTTPException(status_code=400, detail="请输入上下文数据")
+
+    # 获取全局单例 Reporter
+    reporter = getattr(req.app.state, "reporter", None)
+    
+    if not reporter:
+        # 容错：如果全局没初始化（极少情况），临时创建一个
+        reporter = ComplianceReporter()
+
+    return StreamingResponse(
+        reporter.generate_stream(body.raw_data),
         media_type="text/event-stream"
     )
 
@@ -764,36 +787,80 @@ class AuditDetail(Base):
 
 import sys
 import os
+import webbrowser
+import threading
+import time
 from contextlib import asynccontextmanager
 
-# ============================================================
-# ⬇️⬇️⬇️ 【核心修复：恢复这行代码！】 ⬇️⬇️⬇️
-# 这行代码必须在所有 'from src...' 之前
-# ============================================================
+# 路径修正
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# 现在 Python 能找到它们了
 from src.api.routes import router as api_router
 from src.services.chat_agent import CustomsChatAgent
-from src.config.loader import settings # 确保这一行也能被找到
+# 【新增】导入 Reporter 类
+from src.services.report_agent import ComplianceReporter
+from src.config.loader import settings
 
 # ==========================================
 # 🚀 生命周期管理 (单例模式的核心)
 # ==========================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("\n🚀 [System] 服务正在启动，初始化全局 AI 引擎 (只运行一次)...")
+    print("\n🚀 [System] 服务正在启动，初始化全局 AI 引擎...")
+    
+    # 1. 初始化 Chat Agent
     try:
-        # 实例化 Agent 并挂载到 app.state 上
         app.state.agent = CustomsChatAgent()
-        print("✅ [System] 全局 Agent 挂载成功！")
+        print("✅ [System] Chat Agent 挂载成功！")
     except Exception as e:
-        print(f"❌ [System] Agent 初始化失败: {e}")
+        print(f"❌ [System] Chat Agent 初始化失败: {e}")
         app.state.agent = None
+
+    # 2. 【新增】初始化 Report Agent
+    try:
+        app.state.reporter = ComplianceReporter()
+        print("✅ [System] Report Agent 挂载成功！")
+    except Exception as e:
+        print(f"❌ [System] Report Agent 初始化失败: {e}")
+        app.state.reporter = None
+    
+    # 3. 【新增】自动打开网页界面
+    def open_browser():
+        # 等待一小段时间确保服务已启动
+        time.sleep(2)
+        
+        # 检查是否已经有浏览器窗口打开了该页面
+        # 这里使用简单的启发式方法：尝试打开本地服务器地址
+        # 如果用户已经手动打开，webbrowser 可能会重用现有标签页
+        url = "http://localhost:8000"
+        
+        # 同时尝试打开本地文件作为备选
+        local_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "index.html")
+        
+        print(f"🌐 [System] 正在打开网页界面...")
+        print(f"   📍 服务器地址: {url}")
+        print(f"   📍 本地文件: file://{local_file}")
+        
+        try:
+            # 优先尝试打开本地服务器地址
+            webbrowser.open(url, new=0, autoraise=True)
+            print(f"✅ [System] 已尝试打开浏览器，访问 {url}")
+        except Exception as e:
+            print(f"⚠️  [System] 打开浏览器失败: {e}")
+            try:
+                # 备选方案：打开本地文件
+                webbrowser.open(f"file://{local_file}", new=0, autoraise=True)
+                print(f"✅ [System] 已尝试打开本地文件")
+            except Exception as e2:
+                print(f"❌ [System] 所有打开网页的尝试都失败了: {e2}")
+    
+    # 在新线程中打开浏览器，避免阻塞主线程
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
     
     yield  # 服务运行中...
     
@@ -804,7 +871,7 @@ app = FastAPI(
     title="Customs AI Risk Agent",
     description="基于大模型的海关智能审单与风险决策系统",
     version="2.1",
-    lifespan=lifespan # 绑定生命周期
+    lifespan=lifespan 
 )
 
 # --- 跨域配置 (CORS) ---
@@ -822,7 +889,6 @@ app.include_router(api_router, prefix="/api/v1")
 if __name__ == "__main__":
     print("🚀 海关AI决策系统正在启动...")
     print("📄 API 文档地址: http://localhost:8000/docs")
-    # 注意：uvicorn.run 的第一个参数是字符串 "src.main:app"，它会自己处理路径
     uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
 
 
@@ -863,13 +929,24 @@ MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
     def __init__(self):
-        print("🔗 [System] 初始化 Agent...")
+        print("🔗 [System] 初始化 Agent (原生架构 + 网络修正)...")
         
-        # 1. 网络配置
+        # 1. 网络配置 (唯一修改的地方：使用 Transport 解决异步流式卡死)
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
         
-        sync_client = httpx.Client(proxy=proxy_url, verify=False, timeout=60.0)
-        async_client = httpx.AsyncClient(proxy=proxy_url, verify=False, timeout=60.0)
+        # 同步客户端 (保持不变，但建议用 Transport 以防万一)
+        if proxy_url:
+            sync_transport = httpx.HTTPTransport(proxy=proxy_url, verify=False)
+            sync_client = httpx.Client(transport=sync_transport, timeout=60.0)
+        else:
+            sync_client = httpx.Client(verify=False, timeout=60.0)
+
+        # 异步客户端 (核心修复：必须用 AsyncHTTPTransport，否则 astream 会卡死)
+        if proxy_url:
+            async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
+            async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
+        else:
+            async_client = httpx.AsyncClient(verify=False, timeout=120.0)
 
         # 2. LLM (开启流式)
         self.llm = ChatOpenAI(
@@ -906,7 +983,7 @@ class CustomsChatAgent:
                 print("✅ 知识库加载成功")
             except: pass
         
-        # 4. Agent
+        # 4. Agent (完全保留你原本的 create_agent 写法)
         system_prompt = "你是一名海关专家。遇到业务问题必须查库。闲聊直接回。"
         self.agent = create_agent(
             model=self.llm,
@@ -921,7 +998,7 @@ class CustomsChatAgent:
 
     async def chat_stream(self, user_input: str, session_id: str = "default_session"):
         """
-        最终流式逻辑：兼容 DeepSeek 思考过程
+        最终流式逻辑：兼容 DeepSeek 思考过程 (完全保留原逻辑)
         """
         try:
             print(f"\n👉 [Request] {user_input}")
@@ -947,8 +1024,6 @@ class CustomsChatAgent:
                         # 这是一个思考片段
                         safe_reason = reasoning.replace("\n", "\\n").replace('"', '\\"')
                         # 推送给前端，类型为 'thinking'
-                        # 注意：为了打字机效果，前端 thinking 逻辑需要支持追加，或者这里只做状态提示
-                        # 这里我们简化，直接把思考过程作为 thinking 发送，前端会闪烁更新，但这证明流式通了
                         yield f"data: {{\"type\": \"thinking\", \"content\": \"{safe_reason}\"}}\n\n"
                     
                     # --- B. 尝试获取工具调用 (Tool Calls) ---
@@ -987,8 +1062,6 @@ class CustomsChatAgent:
         except Exception as e:
             print(f"❌ Error: {e}")
             yield f"data: {{\"type\": \"error\", \"content\": \"{str(e)}\"}}\n\n"
-
-
 
 
 ============================================================
@@ -1344,51 +1417,161 @@ class LLMService:
 
 
 ============================================================
-文件 20/23: test_stream.py
+文件 20/23: src\services\report_agent.py
 ============================================================
 
-import os
-from openai import OpenAI
+import json
+import asyncio
+import httpx
+from typing import List, AsyncGenerator
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from pathlib import Path
 
-# 1. 配置（和你的 .env 保持一致）
-os.environ['https_proxy'] = 'http://127.0.0.1:7890' # 你的代理端口
-api_key = "sk-714a19818dac43f89b638e8f8422da0e"
-base_url = "https://api.deepseek.com"
+# 导入配置
+from src.config.loader import settings
 
-print("🚀 开始测试原生 OpenAI 流式连接...")
-
-client = OpenAI(api_key=api_key, base_url=base_url)
-
-try:
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant"},
-            {"role": "user", "content": "你好，请帮我写一段300字的科幻小说开头。"},
-        ],
-        stream=True # 开启流式
-    )
-
-    print("✅ 连接成功，准备接收数据...\n")
-    print("-" * 20)
-    
-    for chunk in response:
-        # DeepSeek 的思考内容通常在这里
-        if hasattr(chunk.choices[0].delta, 'reasoning_content'):
-            r_content = chunk.choices[0].delta.reasoning_content
-            if r_content:
-                print(f"[思考] {r_content}", end="", flush=True)
+class ComplianceReporter:
+    def __init__(self):
+        print("📑 [System] 初始化合规报告生成引擎 (DeepSeek Powered)...")
         
-        # 正式内容在这里
-        content = chunk.choices[0].delta.content
-        if content:
-            print(content, end="", flush=True)
-            
-    print("\n" + "-" * 20)
-    print("\n✅ 测试结束")
+        # 1. 网络层配置 (修复点：区分 Sync 和 Async Transport)
+        proxy_url = settings.HTTP_PROXY
+        
+        # ❌ 错误代码 (原): transport = httpx.HTTPTransport(...)
+        # ✅ 修正代码 (新): 使用 AsyncHTTPTransport
+        async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
+        
+        # 创建异步客户端
+        self.async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
 
-except Exception as e:
-    print(f"\n❌ 测试失败: {e}")
+        # 2. LLM 初始化 (DeepSeek)
+        self.llm = ChatOpenAI(
+            model=settings.DEEPSEEK_MODEL,
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL,
+            temperature=0.3, # 报告需要相对严谨
+            # 关键：注入修复后的异步客户端
+            http_async_client=self.async_client,
+            streaming=True
+        )
+
+        # 3. 加载 SOP
+        self.sop_content = self._load_sop()
+
+    def _load_sop(self) -> str:
+        """加载系统级 SOP 文件"""
+        try:
+            # 获取 config/sop_process.txt 的绝对路径
+            base_dir = Path(__file__).resolve().parent.parent.parent
+            sop_path = base_dir / "config" / "sop_process.txt"
+            
+            if sop_path.exists():
+                with open(sop_path, "r", encoding="utf-8") as f:
+                    return f.read()
+            return "无系统SOP文件，请根据通用海关法规进行分析。"
+        except Exception as e:
+            print(f"⚠️ SOP 加载失败: {e}")
+            return "无系统SOP文件。"
+
+    async def generate_stream(self, raw_data: str) -> AsyncGenerator[str, None]:
+        """
+        核心生成流：规划 -> 执行循环 -> 完结
+        yield: SSE 格式字符串
+        """
+        try:
+            # --- 阶段 1: 规划 (Planning) ---
+            yield self._sse_pack("planning", "正在分析数据并根据 SOP 规划报告目录...")
+            
+            # 调用 LLM 生成目录
+            toc_list = await self._generate_toc(raw_data)
+            
+            # 推送目录给前端渲染
+            yield self._sse_pack("toc_generated", {"steps": toc_list})
+            await asyncio.sleep(0.5) 
+
+            # --- 阶段 2: 执行 (Executing) ---
+            # 维护对话历史 (Context Caching)
+            history_messages = [
+                SystemMessage(content=f"""你是一名资深海关合规审计专家。
+依据以下 SOP 标准流程：
+{self.sop_content}
+
+你需要撰写一份专业的《进出口货物合规性审查报告》。
+请保持语气客观、专业，重点指出风险点。不要使用 Markdown 代码块包裹整个回复。"""),
+                HumanMessage(content=f"这是待审查的报关数据：\n{raw_data}\n\n请按照计划撰写报告。")
+            ]
+
+            # 循环生成每一章
+            for index, section_title in enumerate(toc_list):
+                # 2.1 推送状态：开始写这一章
+                yield self._sse_pack("step_start", {"index": index, "title": section_title})
+                
+                # 2.2 构建当前章节的 Prompt
+                step_prompt = f"请撰写报告的第 {index + 1} 部分：【{section_title}】。\n要求：内容详实，如果引用了法规请注明。直接输出 Markdown 内容，不要包含'好的'、'下面是...'等废话。"
+                
+                # 临时消息列表
+                current_turn_messages = history_messages + [HumanMessage(content=step_prompt)]
+                
+                section_content = ""
+                
+                # 2.3 流式生成内容
+                async for chunk in self.llm.astream(current_turn_messages):
+                    if chunk.content:
+                        content = chunk.content
+                        section_content += content
+                        yield self._sse_pack("step_stream", {"chunk": content})
+                
+                # 2.4 上下文缓存：将结果存入历史
+                history_messages.append(HumanMessage(content=step_prompt))
+                history_messages.append(AIMessage(content=section_content))
+                
+                # 2.5 推送状态：这一章完成
+                yield self._sse_pack("step_done", {"index": index})
+                
+                await asyncio.sleep(0.5)
+
+            # --- 阶段 3: 完结 ---
+            yield self._sse_pack("done", {})
+            
+        except Exception as e:
+            print(f"❌ 报告生成流中断: {e}")
+            # 发送错误给前端
+            yield f"data: {json.dumps({'type': 'error', 'payload': str(e)}, ensure_ascii=False)}\n\n"
+
+    async def _generate_toc(self, raw_data: str) -> List[str]:
+        """使用 LLM 生成目录结构 (JSON)"""
+        prompt = f"""
+分析以下报关数据和 SOP，列出合规审查报告的章节目录。
+SOP摘要: {self.sop_content[:200]}...
+数据摘要: {raw_data[:200]}...
+
+要求：
+1. 只返回一个 JSON 字符串数组。
+2. 包含 3-5 个核心章节标题。
+3. 必须包含“风险分析”和“改进建议”相关的章节。
+4. 严禁输出 Markdown 代码块标记，只输出纯数组字符串。
+"""
+        messages = [
+            SystemMessage(content="你是一个JSON生成器。只输出JSON数组，不要任何其他废话。"),
+            HumanMessage(content=prompt)
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(messages)
+            content = response.content.strip()
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            toc = json.loads(content)
+            if isinstance(toc, list):
+                return toc
+            return ["1. 综合分析", "2. 风险提示", "3. 改进建议"]
+        except Exception as e:
+            print(f"❌ 目录生成失败: {e}")
+            return ["1. 数据概览", "2. 详细审查", "3. 总结"]
+
+    def _sse_pack(self, event_type: str, data: any) -> str:
+        return f"data: {json.dumps({'type': event_type, 'payload': data}, ensure_ascii=False)}\n\n"
 
 
 ============================================================
@@ -1445,14 +1628,6 @@ except Exception as e:
         /* --- 侧边栏交互 --- */
         .nav-active { background-color: #1e293b; color: #38bdf8; border-left: 3px solid #38bdf8; }
 
-        /* --- 报告模块：文档样式 --- */
-        .report-content h1 { font-size: 1.5rem; font-weight: bold; color: #38bdf8; margin-bottom: 1rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
-        .report-content h2 { font-size: 1.1rem; font-weight: bold; color: #e2e8f0; margin-top: 1.5rem; margin-bottom: 0.5rem; }
-        .report-content p { margin-bottom: 0.8rem; line-height: 1.6; color: #94a3b8; }
-        .report-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; color: #cbd5e1; }
-        .report-content strong { color: #f59e0b; }
-        .report-content blockquote { border-left: 4px solid #3b82f6; padding-left: 1rem; color: #64748b; font-style: italic; background: rgba(59, 130, 246, 0.05); padding: 10px; margin: 10px 0; border-radius: 4px; }
-
         /* --- 对话模块：聊天气泡 & 流式状态 --- */
         .chat-bubble {
             max-width: 85%;
@@ -1472,21 +1647,61 @@ except Exception as e:
             gap: 8px;
             animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
         }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .chat-ai { background-color: #334155; border-bottom-left-radius: 4px; }
+        .chat-user { background-color: #0ea5e9; border-bottom-right-radius: 4px; }
 
-        /* AI 气泡带一个小尾巴 */
-        .chat-ai {
-            background-color: #334155;
-            border-bottom-left-radius: 4px;
+        /* --- 报告模块专用样式 --- */
+        .report-container { display: flex; height: 100%; gap: 20px; padding: 20px; }
+        .report-source-panel {
+            flex: 1; display: flex; flex-direction: column;
+            background: rgba(30, 41, 59, 0.5); border-radius: 12px; border: 1px solid #334155; padding: 15px;
         }
-        /* 用户气泡带一个小尾巴 */
-        .chat-user {
-            background-color: #0ea5e9;
-            border-bottom-right-radius: 4px;
+        .report-preview-panel {
+            flex: 2; display: flex; flex-direction: column;
+            background: #0f172a; border-radius: 12px; border: 1px solid #334155;
+            position: relative; overflow: hidden;
         }
+        .process-timeline {
+            display: flex; padding: 15px; background: #1e293b; border-bottom: 1px solid #334155;
+            overflow-x: auto; gap: 10px;
+        }
+        .timeline-step {
+            flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+            padding: 6px 12px; background: #334155; border-radius: 20px;
+            font-size: 0.85rem; color: #94a3b8; transition: all 0.3s ease; opacity: 0.6;
+        }
+        .timeline-step.active {
+            background: #0ea5e9; color: white; opacity: 1;
+            box-shadow: 0 0 10px rgba(14, 165, 233, 0.4);
+            animation: pulse-blue 1.5s infinite;
+        }
+        .timeline-step.done { background: #10b981; color: white; opacity: 1; }
+        @keyframes pulse-blue {
+            0% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(14, 165, 233, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
+        }
+        
+        /* Markdown 报告正文样式 */
+        .markdown-body {
+            flex: 1; overflow-y: auto; padding: 30px;
+            font-family: 'Segoe UI', sans-serif; color: #e2e8f0; line-height: 1.8;
+        }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+            color: #38bdf8; margin-top: 1.5em; margin-bottom: 0.5em;
+            border-bottom: 1px solid #334155; padding-bottom: 0.3em; font-weight: bold;
+        }
+        .markdown-body h2 { font-size: 1.5em; }
+        .markdown-body h3 { font-size: 1.2em; }
+        .markdown-body p { margin-bottom: 1em; }
+        .markdown-body ul { list-style: disc; padding-left: 20px; margin-bottom: 1em; }
+        .markdown-body ol { list-style: decimal; padding-left: 20px; margin-bottom: 1em; }
+        .markdown-body blockquote {
+            border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.1);
+            padding: 10px; margin: 10px 0; border-radius: 4px; color: #fbbf24;
+        }
+        .markdown-body strong { color: #facc15; }
     </style>
 </head>
 
@@ -1510,7 +1725,7 @@ except Exception as e:
 
         <button onclick="switchModule('report')" id="nav-report" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-colors">
             <i class="fa-solid fa-file-signature text-xl mb-1"></i>
-            <span class="text-[10px]">建议</span>
+            <span class="text-[10px]">合规建议</span>
         </button>
     </nav>
 
@@ -1638,45 +1853,61 @@ except Exception as e:
             </div>
         </div>
 
-        <!-- ================= 模块 C: 智能建议书 (Reporter) ================= -->
-        <div id="module-report" class="flex-1 hidden flex overflow-hidden module-content">
-            <!-- 左侧：上下文录入 -->
-            <div class="w-1/3 bg-slate-800/50 border-r border-slate-700 p-6 flex flex-col min-w-[300px]">
-                <h2 class="text-lg font-semibold text-green-400 mb-4">
-                    <i class="fa-solid fa-wand-magic-sparkles mr-2"></i>生成优化建议
+        <!-- ================= 模块 C: 智能建议书 (Reporter) - 新版 ================= -->
+        <div id="module-report" class="flex-1 hidden flex flex-col h-full bg-slate-900 module-content">
+            
+            <!-- 顶部操作栏 -->
+            <div class="h-14 bg-slate-800 border-b border-slate-700 flex items-center px-6 justify-between shrink-0">
+                <h2 class="text-green-400 font-bold flex items-center gap-2">
+                    <i class="fa-solid fa-file-contract"></i> 智能合规审计
                 </h2>
-                
-                <div class="mb-4 text-xs text-slate-400 flex justify-between items-center">
-                    <p>请输入报关上下文</p>
-                    <button onclick="importFromAudit()" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-cyan-400 rounded border border-slate-600 transition flex items-center gap-1 cursor-pointer">
+                <div class="flex gap-3">
+                    <button onclick="importFromAudit()" class="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-cyan-400 border border-slate-600 transition">
                         <i class="fa-solid fa-clone"></i> 引用“审单”数据
                     </button>
+                    <button onclick="startReportGeneration()" id="btn-gen-report" class="text-xs px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-white font-bold shadow-lg transition flex items-center gap-2">
+                        <i class="fa-solid fa-play"></i> 生成报告
+                    </button>
                 </div>
-
-                <div class="flex-1 relative neon-border rounded overflow-hidden bg-slate-900">
-                    <textarea id="reportContextInput" class="w-full h-full bg-transparent text-slate-300 p-4 font-mono text-sm resize-none focus:outline-none" placeholder="此处输入待分析的数据或风险点..."></textarea>
-                </div>
-
-                <button onclick="generateReport()" id="genReportBtn" class="mt-4 w-full py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-bold rounded shadow-lg transform transition hover:scale-[1.02] active:scale-95 flex justify-center items-center gap-2">
-                    <i class="fa-solid fa-file-pen"></i> 生成报关建议书
-                </button>
             </div>
 
-            <!-- 右侧：报告预览 -->
-            <div class="flex-1 bg-slate-900 p-8 overflow-y-auto">
-                <div class="max-w-4xl mx-auto bg-slate-800/30 p-10 rounded-lg border border-slate-700 min-h-full shadow-2xl">
-                    <!-- 占位符 -->
-                    <div id="reportPlaceholder" class="h-full flex flex-col items-center justify-center text-slate-600 opacity-50 py-20">
-                        <i class="fa-solid fa-file-lines text-6xl mb-4"></i>
-                        <p>等待生成报告...</p>
+            <!-- 主体内容：左右分栏 -->
+            <div class="report-container flex-1 overflow-hidden">
+                
+                <!-- 左侧：数据源 (Source) -->
+                <div class="report-source-panel flex flex-col w-1/3 min-w-[300px]">
+                    <div class="text-xs text-slate-400 mb-2 flex justify-between">
+                        <span>原始报关数据 / 上下文</span>
+                        <span id="source-status">等待输入...</span>
                     </div>
+                    <textarea id="reportContextInput" 
+                        class="w-full h-full bg-slate-900/50 border border-slate-600 rounded p-3 text-sm text-slate-300 font-mono resize-none focus:outline-none focus:border-green-500 transition"
+                        placeholder="在此粘贴报关单数据、发票信息或风险备注..."></textarea>
+                </div>
+
+                <!-- 右侧：生成预览 (Preview) -->
+                <div class="report-preview-panel flex-1 flex flex-col relative">
                     
-                    <!-- 报告内容 (Markdown 渲染区) -->
-                    <div id="reportContent" class="report-content hidden"></div>
+                    <!-- 顶部流程条 -->
+                    <div id="reportTimeline" class="process-timeline h-14 shrink-0">
+                        <div class="text-slate-500 text-sm flex items-center italic">
+                            <i class="fa-solid fa-arrow-left mr-2"></i> 请先录入数据并点击生成
+                        </div>
+                    </div>
+
+                    <!-- 报告正文 -->
+                    <div id="reportContent" class="markdown-body flex-1">
+                        <!-- AI 生成的内容会流式追加到这里 -->
+                    </div>
+
+                    <!-- 遮罩层 (初始状态) -->
+                    <div id="report-placeholder" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-10">
+                        <i class="fa-solid fa-wand-magic-sparkles text-6xl text-slate-700 mb-4"></i>
+                        <p class="text-slate-500">AI 审计引擎就绪</p>
+                    </div>
                 </div>
             </div>
         </div>
-
     </div>
 
     <!-- ================= 核心脚本逻辑 ================= -->
@@ -1685,6 +1916,8 @@ except Exception as e:
         const API_URL = 'http://localhost:8000/api/v1/analyze';
         const QUERY_URL = 'http://localhost:8000/api/v1/query/declaration/'; 
         const CHAT_URL = 'http://localhost:8000/api/v1/chat';
+        // 【新增】报告生成接口
+        const REPORT_API_URL = 'http://localhost:8000/api/v1/generate_report';
 
         // 生成一个唯一 ID 作为会话 Session ID (用于 Agent 记忆)
         const SESSION_ID = 'session-' + Date.now();
@@ -1939,7 +2172,9 @@ except Exception as e:
             }
         }
 
-        // --- [模块C] 报告逻辑 (保持不变) ---
+        // --- [模块C] 报告逻辑 (核心更新) ---
+        
+        // 引用审单数据
         function importFromAudit() {
             const rawData = document.getElementById('rawDataInput').value;
             const resultDiv = document.getElementById('finalResult');
@@ -1947,24 +2182,132 @@ except Exception as e:
             if (!resultDiv.classList.contains('hidden')) { riskContext = "\n\n【风险研判系统结论】\n" + resultDiv.innerText; }
             if (!rawData && !riskContext) { alert("审单模块暂无数据可引用！"); return; }
             document.getElementById('reportContextInput').value = "【原始报关数据】\n" + rawData + riskContext;
+            document.getElementById('source-status').innerText = "已导入审单数据";
+            // 自动切换并高亮输入框
+            const textarea = document.getElementById('reportContextInput');
+            textarea.classList.add('neon-border');
+            setTimeout(() => textarea.classList.remove('neon-border'), 1000);
         }
 
-        async function generateReport() {
-            const context = document.getElementById('reportContextInput').value;
-            if (!context.trim()) { alert("请输入上下文！"); return; }
-            const btn = document.getElementById('genReportBtn');
-            const placeholder = document.getElementById('reportPlaceholder');
+        // 启动生成
+        async function startReportGeneration() {
+            const rawData = document.getElementById('reportContextInput').value.trim();
+            if (!rawData) { alert("请先输入需要分析的数据！"); return; }
+
+            const btn = document.getElementById('btn-gen-report');
+            const timeline = document.getElementById('reportTimeline');
             const contentDiv = document.getElementById('reportContent');
+            const placeholder = document.getElementById('report-placeholder');
 
-            btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 正在调用 LangChain 生成...';
-            placeholder.classList.add('hidden'); contentDiv.classList.remove('hidden');
-            contentDiv.innerHTML = '<div class="animate-pulse text-cyan-500">正在分析上下文逻辑...</div>';
+            // 1. 重置 UI 状态
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 生成中...';
+            placeholder.classList.add('hidden'); // 隐藏遮罩
+            contentDiv.innerHTML = ''; // 清空旧报告
+            timeline.innerHTML = '<div class="timeline-step active"><i class="fa-solid fa-brain"></i> <span>规划中...</span></div>';
+            
+            try {
+                const response = await fetch(REPORT_API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ raw_data: rawData })
+                });
 
-            setTimeout(() => {
-                const mockMarkdown = `# 📑 进出口货物合规建议书\n\n**生成时间**: ${new Date().toLocaleString()}  \n**分析引擎**: LangChain RAG Agent\n\n---\n\n## 1. 核心风险摘要\n根据提供的报关数据，系统检测到以下**关键合规风险**：\n- **HS编码归类存疑**：申报为 *85423100* (处理器)，但描述中缺乏具体的型号参数。\n- **单证不符**：发票金额与报关单总价存在差异。\n\n## 2. 优化填报建议\n为了确保顺利通关，建议对申报要素进行如下修正：\n\n### A. 补充申报要素\n请在“规格型号”栏目中，按照《规范申报目录》补充以下信息：\n> **建议填写范例**：\n> 32位数字信号处理器；TI品牌；型号TMS320F28335；用于工业控制；LQFP封装。\n\n### B. 核对单证金额\n建议联系发货人重新确认 **Invoice No. INV-2025001** 的最终金额。\n* 当前申报：75,000.00 USD\n* 建议核查：是否包含非贸易性费用（如模具费、软件费）。\n\n## 3. 合规声明\n> 本报告由 AI 辅助生成，仅供参考，最终申报请以海关现场指令为准。`;
-                contentDiv.innerHTML = marked.parse(mockMarkdown);
-                btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-file-pen"></i> 重新生成';
-            }, 2000);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const event = JSON.parse(line.substring(6));
+                                handleReportEvent(event, timeline, contentDiv);
+                            } catch (e) {
+                                console.error("SSE Parse Error:", e);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error(e);
+                contentDiv.innerHTML = `<div class="p-4 text-red-400 border border-red-800 rounded bg-red-900/20">❌ 生成失败: ${e.message}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fa-solid fa-play"></i> 生成报告';
+            }
+        }
+
+        // 处理 SSE 事件 (核心动画逻辑)
+        function handleReportEvent(event, timelineEl, contentEl) {
+            const { type, payload } = event;
+
+            switch (type) {
+                case 'planning':
+                    // 初始规划状态已在 startReportGeneration 中设置，这里可更新提示文字
+                    break;
+                    
+                case 'toc_generated':
+                    // 收到目录，渲染顶部流程条
+                    // payload.steps = ["1. xxx", "2. xxx"]
+                    timelineEl.innerHTML = payload.steps.map((step, idx) => `
+                        <div id="toc-step-${idx}" class="timeline-step">
+                            <i class="fa-regular fa-circle"></i>
+                            <span>${step.split(' ')[1] || step}</span> <!-- 取编号后的文字 -->
+                        </div>
+                    `).join('');
+                    break;
+
+                case 'step_start':
+                    // 某一章开始生成：点亮对应的步骤条，并创建该章的容器
+                    const stepEl = document.getElementById(`toc-step-${payload.index}`);
+                    if (stepEl) {
+                        stepEl.classList.add('active');
+                        stepEl.querySelector('i').className = 'fa-solid fa-circle-notch fa-spin'; // 转圈
+                    }
+                    // 在正文中添加标题占位
+                    contentEl.innerHTML += `<h2 id="section-${payload.index}" class="text-cyan-400 mt-6 mb-2 border-b border-slate-700 pb-2">${payload.title}</h2><div id="content-${payload.index}" class="mb-4"></div>`;
+                    // 自动滚动到底部
+                    contentEl.scrollTop = contentEl.scrollHeight;
+                    break;
+
+                case 'step_stream':
+                    // 收到文字片段，追加到当前章节容器中
+                    // 为了简单且高性能，我们找到最后一个 content div，追加文本
+                    const lastContentDiv = contentEl.lastElementChild;
+                    if (lastContentDiv) {
+                        const currentText = lastContentDiv.getAttribute('data-raw') || "";
+                        const newText = currentText + payload.chunk;
+                        lastContentDiv.setAttribute('data-raw', newText);
+                        lastContentDiv.innerHTML = marked.parse(newText);
+                        
+                        // 自动滚动
+                        contentEl.scrollTop = contentEl.scrollHeight;
+                    }
+                    break;
+
+                case 'step_done':
+                    // 某一章完成：变绿，打勾
+                    const doneStepEl = document.getElementById(`toc-step-${payload.index}`);
+                    if (doneStepEl) {
+                        doneStepEl.classList.remove('active');
+                        doneStepEl.classList.add('done');
+                        doneStepEl.querySelector('i').className = 'fa-solid fa-check';
+                    }
+                    break;
+
+                case 'done':
+                    // 全部完成
+                    contentEl.innerHTML += `<div class="mt-8 p-4 bg-green-900/20 border border-green-700 rounded text-center text-green-400 font-bold"><i class="fa-solid fa-check-double"></i> 报告生成完毕</div>`;
+                    break;
+            }
         }
     </script>
 </body>
@@ -1975,3 +2318,132 @@ except Exception as e:
 文件 23/23: web\style.css
 ============================================================
 
+/* --- 报告模块专用样式 --- */
+
+/* 1. 左右分栏布局 */
+.report-container {
+    display: flex;
+    height: 100%;
+    gap: 20px;
+    padding: 20px;
+}
+
+.report-source-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: rgba(30, 41, 59, 0.5);
+    border-radius: 12px;
+    border: 1px solid #334155;
+    padding: 15px;
+}
+
+.report-preview-panel {
+    flex: 2;
+    display: flex;
+    flex-direction: column;
+    background: #0f172a; /* 深色背景 */
+    border-radius: 12px;
+    border: 1px solid #334155;
+    position: relative;
+    overflow: hidden;
+}
+
+/* 2. 流程步骤条 (Timeline) */
+.process-timeline {
+    display: flex;
+    padding: 15px;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+    overflow-x: auto;
+    gap: 10px;
+}
+
+.timeline-step {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #334155;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    color: #94a3b8;
+    transition: all 0.3s ease;
+    opacity: 0.6;
+}
+
+.timeline-step.active {
+    background: #0ea5e9; /* 蓝色 */
+    color: white;
+    opacity: 1;
+    box-shadow: 0 0 10px rgba(14, 165, 233, 0.4);
+    animation: pulse-blue 1.5s infinite; /* 呼吸灯 */
+}
+
+.timeline-step.done {
+    background: #10b981; /* 绿色 */
+    color: white;
+    opacity: 1;
+}
+
+.timeline-step i {
+    font-size: 0.8rem;
+}
+
+/* 3. 报告内容区域 */
+.markdown-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 30px;
+    font-family: 'Segoe UI', sans-serif;
+    color: #e2e8f0;
+    line-height: 1.8;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+    color: #38bdf8;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+    border-bottom: 1px solid #334155;
+    padding-bottom: 0.3em;
+}
+
+.markdown-body p {
+    margin-bottom: 1em;
+}
+
+.markdown-body ul {
+    list-style: disc;
+    padding-left: 20px;
+    margin-bottom: 1em;
+}
+
+.markdown-body blockquote {
+    border-left: 4px solid #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+    padding: 10px;
+    margin: 10px 0;
+    border-radius: 4px;
+    color: #fbbf24;
+}
+
+/* 4. 动画关键帧 */
+@keyframes pulse-blue {
+    0% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(14, 165, 233, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
+}
+
+/* 5. 高亮标记 */
+mark.risk-highlight {
+    background: transparent;
+    color: #ff4d4d;
+    border-bottom: 2px dashed #ff4d4d;
+    cursor: pointer;
+    padding: 0 2px;
+}
+
+mark.risk-highlight:hover {
+    background: rgba(255, 77, 77, 0.1);
+}
