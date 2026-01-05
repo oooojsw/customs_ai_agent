@@ -12,3 +12,13 @@ Thumbs.db
 # 忽略 VS Code 配置
 .vscode/
 UsersZhuanZnpm-cache/
+CLAUDE.md
+.claude/agents/kfc/spec-design.md
+.claude/agents/kfc/spec-impl.md
+.claude/agents/kfc/spec-judge.md
+.claude/agents/kfc/spec-requirements.md
+.claude/agents/kfc/spec-system-prompt-loader.md
+.claude/agents/kfc/spec-tasks.md
+.claude/agents/kfc/spec-test.md
+.claude/settings/kfc-settings.json
+.claude/system-prompts/spec-workflow-starter.md
