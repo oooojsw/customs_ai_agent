@@ -309,9 +309,15 @@
                     </div>
 
                     <!-- 报告正文 -->
-                    <div id="reportContent" class="markdown-body flex-1">
+                    <div id="reportContent" class="markdown-body flex-1 relative"> <!-- 注意加 relative -->
                         <!-- AI 生成的内容会流式追加到这里 -->
                     </div>
+
+                    <!-- 【新增】回到底部按钮 (默认隐藏) -->
+                    <button id="scroll-to-bottom-btn" onclick="scrollToBottom()" 
+                        class="absolute bottom-6 right-6 w-10 h-10 bg-slate-700/80 hover:bg-cyan-600 text-white rounded-full shadow-lg flex items-center justify-center transition-all opacity-0 pointer-events-none z-20">
+                        <i class="fa-solid fa-arrow-down"></i>
+                    </button>
 
                     <!-- 遮罩层 (初始状态) -->
                     <div id="report-placeholder" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-10">
@@ -474,7 +480,7 @@
             }
         }
 
-        // --- [模块B] 咨询逻辑 ---
+        // --- [模块B] 咨询逻辑 (已修复滚动问题) ---
         async function sendMessage() {
             const inputEl = document.getElementById('chatInput');
             const historyEl = document.getElementById('chatHistory');
@@ -483,7 +489,7 @@
             
             if (!msg) return;
 
-            // 1. 创建用户消息 (使用 DOM 操作而非 innerHTML)
+            // 1. 创建用户消息
             const userBubble = document.createElement('div');
             userBubble.className = 'chat-bubble chat-user'; 
             userBubble.innerText = msg;
@@ -495,6 +501,8 @@
 
             // 清空输入框
             inputEl.value = '';
+            
+            // 【强制滚动】用户刚发消息时，必须滚到底部
             historyEl.scrollTop = historyEl.scrollHeight;
 
             // 2. 创建思考占位符
@@ -513,19 +521,18 @@
             aiContainer.appendChild(aiBubble);
             historyEl.appendChild(aiContainer);
 
-            // 自动滚动
+            // 【强制滚动】显示思考时，也滚到底部
             historyEl.scrollTop = historyEl.scrollHeight;
 
             // 变量准备
             let fullResponseText = ""; 
-            sendBtn.disabled = true; // 禁用发送按钮
+            sendBtn.disabled = true; 
 
             try {
-                // 【核心修改】请求中携带 session_id
                 const response = await fetch(CHAT_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: msg, session_id: SESSION_ID }) // 传入 session_id
+                    body: JSON.stringify({ message: msg, session_id: SESSION_ID }) 
                 });
 
                 const reader = response.body.getReader();
@@ -545,30 +552,35 @@
                             try {
                                 const jsonStr = line.substring(6).trim();
                                 if (!jsonStr) continue;
-                                
                                 const data = JSON.parse(jsonStr);
 
+                                // ============================================================
+                                // 🔥 核心修复：智能滚动逻辑 🔥
+                                // 判断用户当前是否在底部 (允许 100px 的误差)
+                                // ============================================================
+                                const isUserAtBottom = (historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight) < 100;
+
                                 if (data.type === 'thinking') {
-                                    // 更新思考状态 (DOM 引用依然有效)
                                     thinkingEl.innerHTML = `<i class="fa-solid fa-microchip text-cyan-500 mr-2"></i> ${data.content}`;
-                                    historyEl.scrollTop = historyEl.scrollHeight;
+                                    // 只有用户在底部时，才自动滚
+                                    if (isUserAtBottom) historyEl.scrollTop = historyEl.scrollHeight;
+
                                 } else if (data.type === 'answer') {
-                                    // 隐藏思考，显示气泡
                                     thinkingEl.style.display = 'none';
                                     aiBubble.classList.remove('hidden');
                                     
-                                    // 【核心】累加文本并渲染 Markdown
                                     fullResponseText += data.content; 
                                     aiBubble.innerHTML = marked.parse(fullResponseText);
                                     
-                                    // 自动滚动
-                                    historyEl.scrollTop = historyEl.scrollHeight;
+                                    // 只有用户在底部时，才自动滚
+                                    if (isUserAtBottom) historyEl.scrollTop = historyEl.scrollHeight;
+
                                 } else if (data.type === 'error') {
                                     thinkingEl.style.display = 'none';
                                     aiBubble.classList.remove('hidden');
                                     aiBubble.classList.add('text-red-400', 'bg-red-900/20', 'border-red-500/50');
                                     aiBubble.innerHTML = `**[系统错误]** ${data.content}`;
-                                    historyEl.scrollTop = historyEl.scrollHeight;
+                                    historyEl.scrollTop = historyEl.scrollHeight; // 报错时强制滚一下提示用户
                                 }
 
                             } catch (e) { 
@@ -581,7 +593,7 @@
                 console.error(e);
                 thinkingEl.innerHTML = `<span class="text-red-400"><i class="fa-solid fa-triangle-exclamation"></i> 连接超时或服务异常</span>`;
             } finally {
-                sendBtn.disabled = false; // 重新启用发送按钮
+                sendBtn.disabled = false; 
             }
         }
 
@@ -693,7 +705,6 @@
 
                 case 'step_stream':
                     // 收到文字片段，追加到当前章节容器中
-                    // 为了简单且高性能，我们找到最后一个 content div，追加文本
                     const lastContentDiv = contentEl.lastElementChild;
                     if (lastContentDiv) {
                         const currentText = lastContentDiv.getAttribute('data-raw') || "";
@@ -701,8 +712,15 @@
                         lastContentDiv.setAttribute('data-raw', newText);
                         lastContentDiv.innerHTML = marked.parse(newText);
                         
-                        // 自动滚动
-                        contentEl.scrollTop = contentEl.scrollHeight;
+                        // 【核心修复：智能滚动逻辑】
+                        // 1. 计算用户当前是否处于“底部附近”（允许 50px 的误差）
+                        const isUserAtBottom = (contentEl.scrollHeight - contentEl.scrollTop - contentEl.clientHeight) < 50;
+
+                        // 2. 只有当用户原本就在底部时，才自动滚动
+                        if (isUserAtBottom) {
+                            contentEl.scrollTop = contentEl.scrollHeight;
+                        }
+                        // 否则（用户向上翻看了），什么都不做，保持在用户当前看的位置
                     }
                     break;
 
@@ -721,6 +739,26 @@
                     contentEl.innerHTML += `<div class="mt-8 p-4 bg-green-900/20 border border-green-700 rounded text-center text-green-400 font-bold"><i class="fa-solid fa-check-double"></i> 报告生成完毕</div>`;
                     break;
             }
+        }
+
+        // 【新增】监听滚动事件，控制按钮显示
+        const reportContentEl = document.getElementById('reportContent');
+        const scrollBtn = document.getElementById('scroll-to-bottom-btn');
+
+        reportContentEl.addEventListener('scroll', () => {
+            // 如果距离底部超过 100px，显示按钮
+            const distanceToBottom = reportContentEl.scrollHeight - reportContentEl.scrollTop - reportContentEl.clientHeight;
+            if (distanceToBottom > 100) {
+                scrollBtn.classList.remove('opacity-0', 'pointer-events-none');
+            } else {
+                scrollBtn.classList.add('opacity-0', 'pointer-events-none');
+            }
+        });
+
+        // 【新增】点击按钮回到底部
+        function scrollToBottom() {
+            const contentEl = document.getElementById('reportContent');
+            contentEl.scrollTo({ top: contentEl.scrollHeight, behavior: 'smooth' });
         }
     </script>
 </body>
