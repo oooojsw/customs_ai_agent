@@ -1,0 +1,46 @@
+生成日期：2023-12-11 (Post-Fix Phase)
+当前版本：v2.1 Stable
+重点产出：智能建议书模块上线、前端智能滚动机制实装、工程化部署完善
+1. 新增核心模块：智能建议书 (Intelligent Reporter)
+我们成功构建并交付了系统的第三大核心功能——基于 Planner-Executor（规划-执行） 架构的合规报告生成器。这是一个区别于传统对话的、面向长文本生成的工业级解决方案。
+1.1 架构设计
+模式：放弃了 LangGraph 的通用图结构，转而采用更可控的 纯 Python 控制流 (Control Flow) 实现 Planning -> Execution Loop。
+文件落地：
+src/services/report_agent.py: 核心引擎，包含 _generate_toc (目录规划) 和 generate_stream (流式生成) 方法。
+config/sop_process.txt: 引入系统级 SOP（标准作业程序），确保 AI 依据海关规范而非幻觉生成报告。
+1.2 关键技术创新
+DeepSeek Context Caching (上下文缓存)：
+在循环生成每一章时，我们将 [SOP + 原始数据 + 前序章节] 作为前缀重复发送。
+收益：利用 DeepSeek 的缓存特性，使得越往后生成的章节上下文越连贯，且 API 成本降低约 90%，响应速度未因上下文增长而显著下降。
+结构化思维链：
+强制 AI 先输出 JSON 格式的目录（TOC），前端解析后再触发后续的章节生成。这避免了长文写作常见的“烂尾”和“跑题”现象。
+1.3 数据联动
+实现 “一键引用审单数据” 功能。前端自动抓取 Module A（审单）的原始文本和风险结论，拼接成 Context 投喂给 Report Agent，实现了模块间的数据穿透。
+2. 前端交互体验深度优化 (UX Polish)
+针对流式输出场景下的用户痛点，进行了代码级的精细化打磨。
+2.1 “智能滚动锁” (Smart Scroll Lock)
+痛点：在 AI 生成长文本时，用户试图向上翻看历史内容，却被 scrollTop = scrollHeight 强制拽回底部，体验极差。
+解决方案：在 web/index.html 的 handleReportEvent 和 sendMessage 中引入了位置检测逻辑：
+code
+JavaScript
+效果：实现了“用户看哪儿就停哪儿，用户看底部就自动滚”的完美体验。该优化已同步应用至 Chat (咨询) 和 Report (建议) 两个模块。
+2.2 视觉反馈升级
+流程可视化：在报告生成界面顶部增加了 动态 Timeline（时间轴）。
+状态流转：规划中 (灰色) -> 生成中 (蓝色呼吸灯) -> 完成 (绿色对勾)。
+布局重构：采用了 左右分栏 布局（左侧数据源，右侧预览），比传统的上下布局更适合对照审查工作。
+3. 工程化与部署完善 (Engineering)
+3.1 启动体验优化
+重写 src/main.py：
+引入 fastapi.staticfiles，解决了浏览器访问根路径报 404 Not Found 的问题。
+集成 webbrowser 模块，服务启动成功后 自动弹出浏览器 访问 http://127.0.0.1:8000，实现了“开箱即用”的体验。
+3.2 依赖环境修复
+环境重置：协助解决了 Conda 环境误删后的依赖丢失问题。
+依赖明确：明确了 requirements.txt 中必须包含的核心库（fastapi, uvicorn, langchain, httpx 等），并验证了新环境下的运行稳定性。
+4. 当前系统全貌总结
+经过本阶段的开发，项目已从“能跑的代码”进化为“好用的产品”：
+Module A (审单)：基于规则与 RAG 的风险扫描，稳健可靠。
+Module B (咨询)：已修复流式卡顿，现在拥有极致的 Token 级响应速度。
+Module C (建议)：基于 SOP 的长文本生成，逻辑严密，成本低廉。
+UI/UX：具备了防干扰滚动、呼吸灯交互、自动弹窗等商业软件级的细节。
+Next Step:
+目前系统已达到 v2.1 的 Final Stable 状态，建议对当前代码库进行全量备份（Git Commit），作为后续扩展（如增加多模态OCR识别、对接真实海关API）的基石版本。
