@@ -25,3 +25,5 @@ CLAUDE.md
 .dockerignore
 docker-compose.yml
 Dockerfile
+.claude/
+.roo/
