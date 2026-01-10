@@ -69,20 +69,29 @@ async function startReport(isPro) {
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        let buffer = '';
+        
+        // 🔥🔥🔥 关键修复：这里必须是 let，不能是 const 🔥🔥🔥
+        let buffer = ''; 
 
         while(true) {
             const {done, value} = await reader.read();
             if(done) break;
             
+            // 这里的 += 赋值操作要求 buffer 必须是变量
             buffer += decoder.decode(value, {stream: true});
             const lines = buffer.split('\n\n');
+            
+            // 这里的赋值操作也要求 buffer 必须是变量
             buffer = lines.pop();
 
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
-                    const event = JSON.parse(line.substring(6));
-                    handleReportEvent(event);
+                    try {
+                        const event = JSON.parse(line.substring(6));
+                        handleReportEvent(event);
+                    } catch(e) {
+                        console.warn("JSON Parse Error:", e);
+                    }
                 }
             }
         }
@@ -90,7 +99,8 @@ async function startReport(isPro) {
         if (e.name === 'AbortError') {
             contentEl.innerHTML += `<div class="mt-8 p-4 bg-yellow-900/20 border border-yellow-600/50 rounded-lg text-center text-yellow-500">⚠️ 用户已手动终止生成</div>`;
         } else {
-            contentEl.innerHTML = `<div class="text-red-500 p-4">生成错误: ${e}</div>`;
+            console.error(e);
+            contentEl.innerHTML = `<div class="text-red-500 p-4">生成错误: ${e.message}</div>`;
         }
     } finally {
         // 清理工作
@@ -123,7 +133,6 @@ function handleReportEvent(event) {
             logEl.scrollTop = logEl.scrollHeight;
         }
         else if (type === 'rag_search') {
-            // 仅记录日志
             const div = document.createElement('div');
             div.className = 'terminal-line text-yellow-400';
             div.innerHTML = `<span class="terminal-timestamp">[SEARCH]</span> 正在检索: "${payload.query}"`;
@@ -149,7 +158,6 @@ function handleReportEvent(event) {
     // --- 通用处理 ---
     if (type === 'toc') {
         document.getElementById('reportTimeline').innerHTML = payload.map((t, i) => {
-            // 修复：移除Markdown符号，保留完整标题
             const cleanTitle = t.replace(/^\d+\.\s*/, '').replace(/\*\*/g, '');
             return `
             <div id="tl-${i}" class="px-4 py-1.5 bg-slate-700/50 border border-slate-600 rounded-full text-xs text-slate-400 opacity-60 transition flex items-center whitespace-nowrap shrink-0">
@@ -166,27 +174,20 @@ function handleReportEvent(event) {
             tlItem.classList.add('bg-blue-600', 'border-blue-400', 'text-white', 'shadow-lg', 'scale-105'); 
             tlItem.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         }
-        
-        // 【智能滚动 - Step 1】
-        // 强制滚动到底部，以便用户看到新章节标题
         requestAnimationFrame(() => { 
             contentEl.scrollTop = contentEl.scrollHeight; 
         });
     }
     else if (type === 'report_chunk') {
-        // 找到最后一个 section
         const currSection = document.getElementById('curr-section');
         if (currSection) {
             const raw = currSection.getAttribute('data-raw') || '';
+            // 🔥 这里也要注意，不要写成 raw += payload，因为 raw 是 const
             const newRaw = raw + payload;
             currSection.setAttribute('data-raw', newRaw);
             currSection.innerHTML = marked.parse(newRaw);
             
-            // 【智能滚动 - Step 2】
-            // 判断用户当前是否在底部 (容差 150px)
-            // 如果在底部，就跟着滚；如果用户往上翻了，就不滚
             const isUserAtBottom = (contentEl.scrollHeight - contentEl.scrollTop - contentEl.clientHeight) < 150;
-
             if (isUserAtBottom) {
                 requestAnimationFrame(() => {
                     contentEl.scrollTop = contentEl.scrollHeight;
@@ -195,7 +196,6 @@ function handleReportEvent(event) {
         }
     }
     else if (type === 'step_done') {
-            // 移除当前章节 ID
             const doneSection = document.getElementById('curr-section');
             if(doneSection) doneSection.removeAttribute('id');
             
@@ -204,14 +204,12 @@ function handleReportEvent(event) {
                 doneLog.className = 'terminal-line text-green-400';
                 doneLog.innerText = `>> SECTION ${payload.index} COMPLETED.`;
                 document.getElementById('thought-log').appendChild(doneLog);
-                // 强制滚动日志
                 const logEl = document.getElementById('thought-log');
                 logEl.scrollTop = logEl.scrollHeight;
             }
     }
     else if (type === 'done') {
         contentEl.innerHTML += `<div class="mt-8 p-6 bg-green-900/20 border border-green-600/50 rounded-lg text-center"><i class="fa-solid fa-check-circle text-green-500 text-4xl mb-2"></i><h3 class="text-green-400 font-bold">审计报告生成完毕</h3></div>`;
-        // 【强制滚动到底部显示结果】
         setTimeout(() => {
             contentEl.scrollTop = contentEl.scrollHeight;
         }, 100);

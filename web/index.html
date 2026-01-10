@@ -76,6 +76,28 @@
                     </div>
                 </div>
                 
+                <!-- 图片上传区域 (融合了同事的功能，但用了你的 Tailwind 样式) -->
+                <div class="mb-4 p-3 bg-slate-700/30 rounded border border-slate-600 border-dashed">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs text-slate-400"><i class="fa-solid fa-image mr-1"></i> 图片识别 (OCR)</span>
+                        <span class="text-[10px] text-slate-500">支持 jpg/png, Max 20MB</span>
+                    </div>
+                    <div class="flex gap-2">
+                        <input id="imageInput" type="file" accept="image/*" 
+                            class="hidden" onchange="document.getElementById('fileNameDisplay').innerText = this.files[0]?.name || '未选择文件'">
+                        
+                        <button onclick="document.getElementById('imageInput').click()" 
+                            class="flex-1 px-3 py-2 bg-slate-600 hover:bg-slate-500 text-slate-200 rounded text-xs border border-slate-500 transition flex items-center justify-center gap-2">
+                            <i class="fa-solid fa-folder-open"></i> <span id="fileNameDisplay" class="truncate max-w-[100px]">选择图片</span>
+                        </button>
+                        
+                        <button onclick="analyzeImage()" id="imageAnalyzeBtn"
+                            class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs shadow-lg transition flex items-center gap-1">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> 识别
+                        </button>
+                    </div>
+                </div>
+
                 <!-- 快捷按钮 -->
                 <div class="grid grid-cols-2 gap-2 mb-4">
                     <button onclick="loadSample('sample10')" class="text-xs py-2 bg-green-900/30 border border-green-700 text-green-300 rounded hover:bg-green-800/50 font-bold">✅ 10.完美机械</button>

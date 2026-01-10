@@ -116,3 +116,35 @@ class KnowledgeBase:
 
     def get_retriever(self):
         return self.vector_store.as_retriever(search_kwargs={"k": 3})
+
+    async def search_with_score(self, query: str, k: int = 6):
+        """
+        执行向量检索并返回真实相似度分数
+
+        Args:
+            query: 查询文本
+            k: 返回结果数量
+
+        Returns:
+            List[Tuple[Document, float]]: 文档和对应的相似度分数
+            注意：FAISS 返回的是距离（L2距离），需要转换为相似度百分比
+        """
+        # similarity_search_with_score 返回 (Document, score)
+        # score 是 L2 距离的平方，越小越相似（0 表示完全相同）
+        results = self.vector_store.similarity_search_with_score(query, k=k)
+
+        # 将 L2 距离的平方转换为相似度百分比
+        # FAISS 返回的是 squared L2 距离，对于归一化向量范围是 [0, 4]
+        # 相似度 = (1 - sqrt(distance)/2)
+        import math
+        processed_results = []
+        for doc, squared_distance in results:
+            # 取平方根得到真实的 L2 距离
+            distance = math.sqrt(max(0, float(squared_distance)))
+            # 对于归一化向量，L2 距离范围是 [0, 2]
+            distance = min(distance, 2.0)
+            # 转换为相似度 (0-1范围)，前端显示时乘100
+            similarity = float((1 - distance / 2))
+            processed_results.append((doc, similarity))
+
+        return processed_results

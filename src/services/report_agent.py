@@ -38,12 +38,10 @@ class ComplianceReporter:
         )
 
         # 3. 知识库检索器
-        self.retriever = None
+        self.kb = None
         if KnowledgeBase:
             try:
-                kb = KnowledgeBase()
-                # 通用检索设置，具体策略在 Prompt 里微调
-                self.retriever = kb.vector_store.as_retriever(search_kwargs={"k": 6})
+                self.kb = KnowledgeBase()
             except Exception as e:
                 print(f"⚠️ 知识库加载失败: {e}")
 
@@ -148,54 +146,74 @@ class ComplianceReporter:
 
                         strategy_prompt = f"""
 你是一名{role_desc}。正在撰写：《{section_title}》。
-原始输入：{input_text[:300]}...
 
-【前文摘要】
-{previous_context}
+【⚠️ 核心要求】
+请提取一个简短的检索关键词（2-6个词），用于在本地知识库中查找相关法规或技术资料。
 
-【已收集笔记】
-{"".join(section_notes[-2:]) if section_notes else "暂无"}
+【限制条件】
+1. **严禁输出分析过程**，直接输出关键词
+2. 关键词长度：2-6个词
+3. 不要输出完整句子或段落
+4. 只输出关键词，不要引号、不要标点
 
-【指令】
-{strategy_instruction}
-请输出一个具体的、从未搜过的检索关键词。
+【参考示例】
+✅ 正确：HS编码8536 归类规则
+✅ 正确：锂电池 联合国危险品分类
+✅ 正确：贸易管制 出口许可证
+❌ 错误：为了明确该产品的归类，我需要查找...
+❌ 错误：该产品的物理接口细节包括...
+
+【当前上下文】
+章节：{section_title}
+前文：{previous_context[:200]}
 """
                         q_res = await self.llm.ainvoke([HumanMessage(content=strategy_prompt)])
-                        query = q_res.content.strip().replace('"', '').replace("'", "")
+                        # 清理输出，只取第一行，去除标点和引号
+                        query = q_res.content.strip().split('\n')[0].strip('"\'')
+                        # 去除常见中文标点
+                        for char in '。，、？！':
+                            query = query.strip(char)
                         section_search_history.append(query)
                         
                         yield self._sse("thought", f"[Round {round_idx}] 正在知识库比对：'{query}'")
                         yield self._sse("rag_search", {"query": query})
                         
-                        # 执行检索
+                        # 执行检索（使用真实相似度分数）
                         snippet = ""
                         score = 0.0
                         filename = "LocalDB"
 
-                        if self.retriever:
+                        if self.kb:
                             try:
-                                docs = await self.retriever.ainvoke(query)
-                                for doc in docs:
+                                # 调用新的带分数检索方法
+                                results = await self.kb.search_with_score(query, k=6)
+
+                                for doc, similarity in results:
                                     doc_hash = hash(doc.page_content[:30])
                                     if doc_hash not in state["used_doc_hashes"]:
                                         snippet = doc.page_content
                                         filename = Path(doc.metadata.get("source", "unknown")).name
-                                        score = 0.85
+                                        score = similarity  # 使用真实的相似度百分比 (0-100)
                                         state["used_doc_hashes"].add(doc_hash)
-                                        break 
-                                if not snippet and docs:
-                                    snippet = docs[0].page_content 
-                                    score = 0.65
+                                        break
+
+                                # 如果所有文档都用过了，取第一个作为后备
+                                if not snippet and results:
+                                    snippet = results[0][0].page_content
+                                    score = results[0][1] * 0.8  # 稍微降权，因为是重复使用
+
                             except Exception as e:
                                 print(f"检索错: {e}")
+                                import traceback
+                                traceback.print_exc()
 
                         if not snippet:
                             snippet = "（未在本地知识库中找到直接对应条款，需依据通用专业知识判断）"
-                            score = 0.1
+                            score = 0.0
 
                         yield self._sse("rag_result", {
                             "filename": filename,
-                            "score": score,
+                            "score": float(score),  # 确保 JSON 可序列化
                             "snippet": snippet[:100] + "..."
                         })
 
@@ -234,6 +252,18 @@ class ComplianceReporter:
 【写作指令】
 1. {instruction_special}
 2. 直接输出 Markdown 正文。
+
+【⚠️ 格式要求 - 重要】
+- **严禁在正文开头重复章节标题**（如 "## 2. 价格审查"），因为系统已经自动显示了标题
+- **直接从正文第一段开始写**，例如：
+
+❌ 错误示例：
+## 2. 价格真实性与逻辑审查
+承接前文归类复核结论...
+
+✅ 正确示例：
+承接前文归类复核结论，HS编码8479.8962的适用性虽基本成立，但申报要素的简化描述...
+
 """
                 current_section_content = ""
                 async for chunk in self.llm.astream([HumanMessage(content=write_prompt)]):

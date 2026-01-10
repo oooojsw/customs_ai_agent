@@ -142,3 +142,52 @@ function renderAuditStep(data, container, final) {
         }
     }
 }
+
+// --- 新增图片识别逻辑 ---
+async function analyzeImage() {
+    const input = document.getElementById('imageInput');
+    const btn = document.getElementById('imageAnalyzeBtn');
+    const file = input.files && input.files[0];
+    
+    if (!file) { alert("请先选择一张报关单图片！"); return; }
+    
+    // UI Loading
+    const originalContent = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+    
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch(IMAGE_API_URL, { 
+            method: 'POST', 
+            body: formData 
+        });
+        
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || "识别服务异常");
+        }
+        
+        const resJson = await response.json();
+        
+        // 填入文本框
+        const textarea = document.getElementById('rawDataInput');
+        textarea.value = resJson.text || '';
+        
+        // 视觉反馈 (高亮闪烁)
+        textarea.parentElement.classList.add('neon-border');
+        setTimeout(() => textarea.parentElement.classList.remove('neon-border'), 1000);
+        
+        // 自动触发审单 (可选，如果不想自动开始就把下面这行注释掉)
+        // await startAnalysis(); 
+        
+    } catch (e) {
+        console.error(e);
+        alert("❌ 图片识别失败: " + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = originalContent;
+    }
+}

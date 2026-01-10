@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -6,6 +6,8 @@ from src.services.data_client import DataClient
 from src.core.orchestrator import RiskAnalysisOrchestrator
 # 【新增】引入 Reporter
 from src.services.report_agent import ComplianceReporter
+# 【新增】导入图片识别服务
+from src.services.image_extractor import ImageTextExtractor, NotDeclarationError
 
 router = APIRouter()
 
@@ -27,14 +29,34 @@ async def analyze_customs_declaration(request: AnalysisRequest):
     核心分析接口 (SSE 流式输出)
     """
     if not request.raw_data or len(request.raw_data.strip()) < 5:
-        raise HTTPException(status_code=400, detail="请输入有效的报关数据")
-
+            raise HTTPException(status_code=400, detail="请输入有效的报关数据")
+    
     orchestrator = RiskAnalysisOrchestrator()
-
+    
     return StreamingResponse(
-        orchestrator.analyze_stream(request.raw_data),
-        media_type="text/event-stream"
+    orchestrator.analyze_stream(request.raw_data),
+    media_type="text/event-stream"
     )
+
+@router.post("/analyze_image")
+async def analyze_declaration_image(file: UploadFile = File(...)):
+    """
+    【新增】上传报关单图片 -> 识别文本
+    """
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="仅支持图片格式文件")
+        
+    content = await file.read()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="图片大小超过20MB限制")
+        
+    extractor = ImageTextExtractor()
+    try:
+        # 这里调用我们新建的 extractor
+        text, model_used = extractor.extract_text(content, file.content_type)
+        return {"text": text, "model": model_used}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"图片识别失败: {str(e)}")
 
 @router.post("/chat")
 async def chat_with_agent(body: ChatRequest, request: Request):

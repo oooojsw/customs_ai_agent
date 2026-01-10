@@ -32,6 +32,12 @@ class ConfigLoader:
         self.DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
         self.DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
         
+        # --- 【新增】Azure OpenAI 配置 ---
+        self.AZURE_OAI_KEY = os.getenv("AZURE_OAI_KEY", "")
+        self.AZURE_OAI_ENDPOINT = os.getenv("AZURE_OAI_ENDPOINT", "")
+        self.AZURE_OAI_DEPLOYMENT = os.getenv("AZURE_OAI_DEPLOYMENT", "")
+        self.AZURE_OAI_VERSION = os.getenv("AZURE_OAI_VERSION", "2024-02-01")
+
         # 网络代理
         self.HTTP_PROXY = os.getenv("HTTP_PROXY")
         self.HTTPS_PROXY = os.getenv("HTTPS_PROXY")
