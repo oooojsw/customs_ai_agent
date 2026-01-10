@@ -4,762 +4,255 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>海关智能报关决策系统 v2.1</title>
-    <!-- 1. 样式库 -->
+    <title>海关智能报关决策系统 v3.0 Pro</title>
+    <!-- 核心库 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- 2. Markdown 渲染引擎 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <style>
-        /* --- 核心主题 --- */
-        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        
-        /* --- 霓虹特效 --- */
-        .neon-border { box-shadow: 0 0 10px rgba(56, 189, 248, 0.3); transition: all 0.3s ease; border: 1px solid rgba(56, 189, 248, 0.2); }
-        .neon-border:focus-within { box-shadow: 0 0 20px rgba(56, 189, 248, 0.6); border-color: #38bdf8; }
-
-        /* --- 审单模块：呼吸动画 --- */
-        @keyframes breathe {
-            0% { opacity: 0.4; box-shadow: 0 0 5px #3b82f6; }
-            50% { opacity: 1; box-shadow: 0 0 20px #3b82f6; border-color: #60a5fa; }
-            100% { opacity: 0.4; box-shadow: 0 0 5px #3b82f6; }
-        }
-        .status-thinking { animation: breathe 1.5s infinite ease-in-out; border: 1px solid #3b82f6; background-color: rgba(59, 130, 246, 0.1); }
-
-        /* --- 审单模块：结果卡片 --- */
-        .step-card { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); border-left: 4px solid transparent; }
-        .step-card.pending { border-left-color: #475569; opacity: 0.5; }
-        .step-card.pass { border-left-color: #22c55e; background: rgba(34, 197, 94, 0.1); opacity: 1; }
-        .step-card.risk { border-left-color: #ef4444; background: rgba(239, 68, 68, 0.1); opacity: 1; }
-
-        /* --- 滚动条美化 --- */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #1e293b; }
-        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
-
-        /* --- 侧边栏交互 --- */
-        .nav-active { background-color: #1e293b; color: #38bdf8; border-left: 3px solid #38bdf8; }
-
-        /* --- 对话模块：聊天气泡 & 流式状态 --- */
-        .chat-bubble {
-            max-width: 85%;
-            padding: 12px 16px;
-            border-radius: 16px;
-            font-size: 0.95rem;
-            position: relative;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-        }
-        .chat-thinking {
-            padding: 8px 15px;
-            color: #94a3b8;
-            font-size: 0.9rem;
-            font-style: italic;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .chat-ai { background-color: #334155; border-bottom-left-radius: 4px; }
-        .chat-user { background-color: #0ea5e9; border-bottom-right-radius: 4px; }
-
-        /* --- 报告模块专用样式 --- */
-        .report-container { display: flex; height: 100%; gap: 20px; padding: 20px; }
-        .report-source-panel {
-            flex: 1; display: flex; flex-direction: column;
-            background: rgba(30, 41, 59, 0.5); border-radius: 12px; border: 1px solid #334155; padding: 15px;
-        }
-        .report-preview-panel {
-            flex: 2; display: flex; flex-direction: column;
-            background: #0f172a; border-radius: 12px; border: 1px solid #334155;
-            position: relative; overflow: hidden;
-        }
-        .process-timeline {
-            display: flex; padding: 15px; background: #1e293b; border-bottom: 1px solid #334155;
-            overflow-x: auto; gap: 10px;
-        }
-        .timeline-step {
-            flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
-            padding: 6px 12px; background: #334155; border-radius: 20px;
-            font-size: 0.85rem; color: #94a3b8; transition: all 0.3s ease; opacity: 0.6;
-        }
-        .timeline-step.active {
-            background: #0ea5e9; color: white; opacity: 1;
-            box-shadow: 0 0 10px rgba(14, 165, 233, 0.4);
-            animation: pulse-blue 1.5s infinite;
-        }
-        .timeline-step.done { background: #10b981; color: white; opacity: 1; }
-        @keyframes pulse-blue {
-            0% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(14, 165, 233, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
-        }
-        
-        /* Markdown 报告正文样式 */
-        .markdown-body {
-            flex: 1; overflow-y: auto; padding: 30px;
-            font-family: 'Segoe UI', sans-serif; color: #e2e8f0; line-height: 1.8;
-        }
-        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
-            color: #38bdf8; margin-top: 1.5em; margin-bottom: 0.5em;
-            border-bottom: 1px solid #334155; padding-bottom: 0.3em; font-weight: bold;
-        }
-        .markdown-body h2 { font-size: 1.5em; }
-        .markdown-body h3 { font-size: 1.2em; }
-        .markdown-body p { margin-bottom: 1em; }
-        .markdown-body ul { list-style: disc; padding-left: 20px; margin-bottom: 1em; }
-        .markdown-body ol { list-style: decimal; padding-left: 20px; margin-bottom: 1em; }
-        .markdown-body blockquote {
-            border-left: 4px solid #f59e0b; background: rgba(245, 158, 11, 0.1);
-            padding: 10px; margin: 10px 0; border-radius: 4px; color: #fbbf24;
-        }
-        .markdown-body strong { color: #facc15; }
-    </style>
+    
+    <!-- 引入自定义样式 -->
+    <link rel="stylesheet" href="css/style.css">
 </head>
 
-<body class="h-screen flex overflow-hidden">
+<body class="h-screen flex">
 
     <!-- ================= 侧边导航栏 ================= -->
-    <nav class="w-16 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 z-20 gap-2 shrink-0">
-        <div class="mb-4 text-cyan-400">
-            <i class="fa-solid fa-shield-halved text-2xl"></i>
-        </div>
+    <nav class="w-16 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 z-20 gap-2 shrink-0 shadow-xl">
+        <div class="mb-4 text-cyan-400 animate-pulse"><i class="fa-solid fa-shield-halved text-2xl"></i></div>
         
-        <button onclick="switchModule('audit')" id="nav-audit" class="nav-active w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-colors">
-            <i class="fa-solid fa-file-contract text-xl mb-1"></i>
-            <span class="text-[10px]">审单</span>
+        <button onclick="switchModule('audit')" id="nav-audit" class="nav-active w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800">
+            <i class="fa-solid fa-file-contract text-xl mb-1"></i><span class="text-[10px]">审单</span>
         </button>
 
-        <button onclick="switchModule('chat')" id="nav-chat" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-colors">
-            <i class="fa-solid fa-comments text-xl mb-1"></i>
-            <span class="text-[10px]">咨询</span>
+        <button onclick="switchModule('chat')" id="nav-chat" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800">
+            <i class="fa-solid fa-comments text-xl mb-1"></i><span class="text-[10px]">咨询</span>
         </button>
 
-        <button onclick="switchModule('report')" id="nav-report" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-colors">
-            <i class="fa-solid fa-file-signature text-xl mb-1"></i>
-            <span class="text-[10px]">合规建议</span>
+        <button onclick="switchModule('report')" id="nav-report" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800">
+            <i class="fa-solid fa-file-signature text-xl mb-1"></i><span class="text-[10px]">合规建议</span>
         </button>
     </nav>
 
     <!-- ================= 主体内容区 ================= -->
-    <div class="flex-1 flex flex-col min-w-0">
+    <div class="flex-1 flex flex-col min-w-0 bg-slate-900 relative">
         
-        <!-- 顶部状态栏 -->
-        <header class="h-16 bg-slate-900 border-b border-slate-700 flex items-center px-6 justify-between shadow-lg shrink-0">
+        <!-- 背景装饰 -->
+        <div class="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
+            <div class="absolute top-[-10%] right-[-5%] w-96 h-96 bg-blue-900/10 rounded-full blur-3xl"></div>
+            <div class="absolute bottom-[-10%] left-[-5%] w-96 h-96 bg-cyan-900/10 rounded-full blur-3xl"></div>
+        </div>
+
+        <!-- 全局 Header -->
+        <header class="h-16 bg-slate-900 border-b border-slate-700 flex items-center px-6 justify-between shadow-lg shrink-0 z-20 relative">
             <div>
-                <h1 class="text-xl font-bold tracking-wider text-white">智能报关系统</h1>
-                <p class="text-xs text-slate-400">智慧口岸自动化报关辅助决策系统 v2.1 (LangChain Edition)</p>
+                <h1 class="text-xl font-bold tracking-wider text-white flex items-center gap-2">
+                    <i class="fa-solid fa-robot text-cyan-400"></i> 智能报关系统
+                </h1>
+                <p class="text-[10px] text-slate-400 tracking-widest">智慧口岸自动化报关辅助决策系统 v3.0 Pro</p>
             </div>
-            <div class="flex gap-4 text-sm text-slate-300">
-                <span class="flex items-center gap-2"><div class="w-2 h-2 rounded-full bg-green-500"></div> 系统在线</span>
-                <span class="flex items-center gap-2"><div class="w-2 h-2 rounded-full bg-blue-500"></div> deepseek </span>
+            <div class="flex gap-4 text-xs font-mono">
+                <span class="flex items-center gap-2 text-green-400 bg-green-900/20 px-3 py-1 rounded-full border border-green-800">
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div> 系统在线
+                </span>
+                <span class="flex items-center gap-2 text-blue-400 bg-blue-900/20 px-3 py-1 rounded-full border border-blue-800">
+                    <div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> deepseek-v3/r1
+                </span>
             </div>
         </header>
 
         <!-- ================= 模块 A: 智能审单 (Core Engine) ================= -->
-        <div id="module-audit" class="flex-1 flex overflow-hidden module-content">
-            <!-- 左栏 -->
-            <div class="w-1/3 bg-slate-800/50 border-r border-slate-700 p-6 flex flex-col min-w-[300px]">
+        <div id="module-audit" class="flex-1 flex overflow-hidden module-content z-10">
+            <!-- 左栏：输入 -->
+            <div class="w-1/3 bg-slate-800/50 border-r border-slate-700 p-6 flex flex-col min-w-[320px]">
                 <div class="mb-4">
-                    <div class="flex justify-between items-center mb-2">
-                        <h2 class="text-lg font-semibold text-cyan-400"><i class="fa-solid fa-file-import mr-2"></i>报关单据录入</h2>
-                    </div>
-                    <!-- 数据查询栏 -->
+                    <h2 class="text-lg font-bold text-cyan-400 mb-3 flex items-center"><i class="fa-solid fa-layer-group mr-2"></i>单据研判</h2>
+                    <!-- 查询 -->
                     <div class="flex gap-2">
                         <div class="relative flex-1">
-                            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                <i class="fa-solid fa-search text-slate-500"></i>
-                            </div>
-                            <input type="text" id="searchInput" 
-                                class="w-full bg-slate-900 border border-slate-600 text-slate-300 text-sm rounded focus:ring-1 focus:ring-blue-500 focus:border-blue-500 block pl-10 p-2 placeholder-slate-600" 
-                                placeholder="输入单号 (例: 530120250001)"
-                                onkeydown="if(event.keyCode==13) searchDeclaration()">
+                            <i class="fa-solid fa-search absolute left-3 top-3 text-slate-500 text-xs"></i>
+                            <input type="text" id="searchInput" class="w-full bg-slate-900 border border-slate-600 rounded pl-8 p-2 text-sm text-slate-200 focus:border-cyan-500 focus:outline-none" placeholder="输入报关单号...">
                         </div>
-                        <button onclick="searchDeclaration()" id="searchBtn" class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-xs border border-slate-600 transition">查询</button>
+                        <button onclick="searchDeclaration()" id="searchBtn" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded text-xs transition">查询</button>
                     </div>
                 </div>
-
-                <!-- 快捷样本按钮 -->
+                
+                <!-- 快捷按钮 -->
                 <div class="grid grid-cols-2 gap-2 mb-4">
-                    <button onclick="loadSample('sample10')" class="text-xs py-2 bg-green-600/20 border border-green-600 hover:bg-green-600/40 text-green-300 rounded transition font-bold">✅ 10.完美机械</button>
-                    <button onclick="loadSample('sample7')" class="text-xs py-2 bg-green-600/20 border border-green-600 hover:bg-green-600/40 text-green-300 rounded transition font-bold">✅ 7.免费样品</button>
-                    <button onclick="loadSample('sample1')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 1.归类欺诈</button>
-                    <button onclick="loadSample('sample2')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 2.洋垃圾</button>
-                    <button onclick="loadSample('sample3')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 3.重量误差</button>
-                    <button onclick="loadSample('sample4')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 4.要素模糊</button>
-                    <button onclick="loadSample('sample5')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 5.价格洗钱</button>
-                    <button onclick="loadSample('sample6')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 6.濒危红木</button>
-                    <button onclick="loadSample('sample8')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 8.两用物项</button>
-                    <button onclick="loadSample('sample9')" class="text-xs py-1 bg-red-900/30 border border-red-800 hover:bg-red-900/50 text-red-300 rounded transition">❌ 9.币制错误</button>
+                    <button onclick="loadSample('sample10')" class="text-xs py-2 bg-green-900/30 border border-green-700 text-green-300 rounded hover:bg-green-800/50 font-bold">✅ 10.完美机械</button>
+                    <button onclick="loadSample('sample7')" class="text-xs py-2 bg-green-900/30 border border-green-700 text-green-300 rounded hover:bg-green-800/50 font-bold">✅ 7.免费样品</button>
+                    <button onclick="loadSample('sample1')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 1.归类欺诈</button>
+                    <button onclick="loadSample('sample2')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 2.洋垃圾</button>
+                    <button onclick="loadSample('sample3')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 3.重量误差</button>
+                    <button onclick="loadSample('sample4')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 4.要素模糊</button>
+                    <button onclick="loadSample('sample5')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 5.价格洗钱</button>
+                    <button onclick="loadSample('sample6')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 6.濒危红木</button>
+                    <button onclick="loadSample('sample8')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 8.两用物项</button>
+                    <button onclick="loadSample('sample9')" class="text-xs py-1 bg-red-900/30 border border-red-700 text-red-300 rounded hover:bg-red-800/50">❌ 9.币制错误</button>
                 </div>
 
-                <!-- 大文本框 -->
-                <div class="flex-1 relative neon-border rounded overflow-hidden bg-slate-900">
-                    <textarea id="rawDataInput" class="w-full h-full bg-transparent text-slate-300 p-4 font-mono text-sm resize-none focus:outline-none" placeholder="在此粘贴 OCR 识别结果、JSON 数据或报关单文本..."></textarea>
+                <!-- 文本域 -->
+                <div class="flex-1 relative neon-border rounded overflow-hidden bg-slate-900/80 focus-neon">
+                    <textarea id="rawDataInput" class="w-full h-full bg-transparent text-slate-300 p-4 font-mono text-xs resize-none focus:outline-none" placeholder="在此粘贴报关数据..."></textarea>
                 </div>
-
-                <button id="startBtn" onclick="startAnalysis()" class="mt-4 w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded shadow-lg transform transition hover:scale-[1.02] active:scale-95 flex justify-center items-center gap-2">
+                <button id="startBtn" onclick="startAnalysis()" class="mt-4 w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded shadow-lg transition flex justify-center items-center gap-2">
                     <i class="fa-solid fa-rocket"></i> 开始智能研判
                 </button>
             </div>
 
-            <!-- 右栏：推理流 -->
-            <div class="flex-1 bg-slate-900 p-6 overflow-y-auto relative">
+            <!-- 右栏：结果流 -->
+            <div class="flex-1 bg-slate-900/50 p-6 overflow-y-auto relative">
                 <div class="max-w-4xl mx-auto">
                     <h2 class="text-lg font-semibold text-cyan-400 mb-6 flex items-center">
-                        <i class="fa-solid fa-microchip mr-2"></i>AI 决策推理流
-                        <span id="statusTag" class="ml-4 text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400 hidden">分析中...</span>
+                        <i class="fa-solid fa-microchip mr-2"></i>决策推理流
+                        <span id="statusTag" class="ml-4 text-xs px-2 py-0.5 rounded bg-slate-700 text-slate-400 hidden">执行中</span>
                     </h2>
-                    
-                    <!-- 步骤卡片容器 -->
-                    <div id="stepsContainer" class="space-y-4 min-h-[500px] flex flex-col justify-center items-center transition-all duration-500">
-                        <!-- 默认待机状态 (盾牌动画) -->
-                        <div class="text-center group cursor-default select-none">
-                            <div class="relative inline-block">
-                                <div class="absolute -inset-4 bg-cyan-500/20 rounded-full blur-xl group-hover:bg-cyan-500/30 transition-all duration-500"></div>
-                                <i class="fa-solid fa-shield-halved text-8xl text-slate-700/50 relative z-10 group-hover:text-cyan-500/80 transition-all duration-500 animate-pulse"></i>
-                                <i class="fa-solid fa-lock text-3xl text-slate-800 absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20"></i>
-                            </div>
-                            <h3 class="mt-8 text-2xl font-bold text-slate-600 tracking-widest group-hover:text-cyan-400 transition-colors">SYSTEM READY</h3>
-                            <p class="mt-2 text-sm text-slate-500 group-hover:text-slate-400 transition-colors">等待数据录入 · 安全引擎待命</p>
+                    <div id="stepsContainer" class="space-y-4 min-h-[400px] flex flex-col justify-center items-center transition-all">
+                        <!-- 待机图标 -->
+                        <div class="text-center opacity-40">
+                            <i class="fa-solid fa-shield-halved text-8xl text-slate-700 mb-4"></i>
+                            <p class="text-sm">系统待命 SYSTEM READY</p>
                         </div>
                     </div>
-
-                    <!-- 最终结果 -->
                     <div id="finalResult" class="mt-8 hidden"></div>
                 </div>
             </div>
         </div>
 
-        <!-- ================= 模块 B: 智能咨询 (LangChain Agent) ================= -->
-        <div id="module-chat" class="flex-1 hidden flex flex-col h-full bg-slate-900 module-content overflow-hidden relative">
+        <!-- ================= 模块 B: 智能咨询 (Chat) ================= -->
+        <div id="module-chat" class="flex-1 hidden flex flex-col h-full module-content z-10">
+            <header class="h-14 bg-slate-800/50 border-b border-slate-700 flex items-center px-6">
+                <div class="text-cyan-400 font-bold flex items-center gap-2 text-sm">
+                    <i class="fa-solid fa-robot"></i> 咨询助手
+                </div>
+                <div class="ml-auto text-xs text-slate-500">RAG 知识库已连接</div>
+            </header>
             
-            <!-- 聊天记录区域 -->
-            <div id="chatHistory" class="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scroll-smooth pb-24">
-                <!-- 欢迎语 -->
+            <div id="chatHistory" class="flex-1 overflow-y-auto p-6 flex flex-col gap-4 pb-24">
                 <div class="flex justify-start">
                     <div class="chat-bubble chat-ai shadow-lg">
-                        <div class="flex items-center gap-2 mb-2 text-cyan-400 font-bold">
-                            <i class="fa-solid fa-robot"></i> 法规咨询助手
-                        </div>
-                        👋 您好！我可以帮您查询内部法规或回答业务问题。<br>
-                        <span class="text-xs text-slate-400 mt-2 block">基于 RAG 知识库 + DeepSeek-V3</span>
+                        <div class="font-bold text-cyan-400 mb-1 text-xs">AI Assistant</div>
+                        👋 您好！我是您的海关法规专家。我可以帮您查询归类规则、税率政策或监管条件。
                     </div>
                 </div>
             </div>
 
-            <!-- 输入区域 (固定在底部) -->
-            <div class="absolute bottom-0 w-full bg-slate-800/90 backdrop-blur border-t border-slate-700 p-4 z-10">
-                <div class="max-w-4xl mx-auto flex gap-3 items-end">
-                    <div class="flex-1 bg-slate-900 border border-slate-600 rounded-xl p-2 focus-within:border-cyan-500 focus-within:ring-1 focus-within:ring-cyan-500 transition-all">
-                        <textarea id="chatInput" rows="1"
-                            class="w-full bg-transparent text-slate-300 px-2 py-1 text-sm focus:outline-none resize-none max-h-32"
-                            placeholder="请输入您的问题... (Shift+Enter 换行)"
-                            onkeydown="if(event.keyCode==13 && !event.shiftKey) { event.preventDefault(); sendMessage(); }"></textarea>
-                    </div>
-                    
-                    <button onclick="sendMessage()" id="sendBtn" class="w-10 h-10 bg-cyan-600 hover:bg-cyan-500 text-white rounded-full flex items-center justify-center transition shadow-lg shrink-0 mb-1">
-                        <i class="fa-solid fa-paper-plane text-sm"></i>
-                    </button>
+            <div class="absolute bottom-0 w-full bg-slate-800/90 backdrop-blur border-t border-slate-700 p-4">
+                <div class="max-w-4xl mx-auto flex gap-3">
+                    <textarea id="chatInput" rows="1" class="flex-1 bg-slate-900 border border-slate-600 rounded-lg p-3 text-sm text-white focus:border-cyan-500 focus:outline-none resize-none" placeholder="请输入问题..."
+                    onkeydown="if(event.keyCode==13 && !event.shiftKey) { event.preventDefault(); sendMessage(); }"></textarea>
+                    <button onclick="sendMessage()" id="sendBtn" class="w-12 h-10 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg flex items-center justify-center transition"><i class="fa-solid fa-paper-plane"></i></button>
                 </div>
             </div>
         </div>
 
-        <!-- ================= 模块 C: 智能建议书 (Reporter) - 新版 ================= -->
-        <div id="module-report" class="flex-1 hidden flex flex-col h-full bg-slate-900 module-content">
+        <!-- ================= 模块 C: 智能建议书 (Pro 重构版) ================= -->
+        <div id="module-report" class="flex-1 hidden flex flex-col h-full module-content z-10">
             
-            <!-- 顶部操作栏 -->
-            <div class="h-14 bg-slate-800 border-b border-slate-700 flex items-center px-6 justify-between shrink-0">
-                <h2 class="text-green-400 font-bold flex items-center gap-2">
-                    <i class="fa-solid fa-file-contract"></i> 智能合规审计
-                </h2>
+            <!-- 1. 顶部操作栏 -->
+            <div class="h-16 bg-slate-800/50 border-b border-slate-700 flex items-center px-6 justify-between shrink-0 shadow-lg">
+                <div class="flex items-center gap-4">
+                    <h2 class="text-green-400 font-bold flex items-center gap-2 text-lg">
+                        <i class="fa-solid fa-file-contract"></i> 智能合规审计
+                    </h2>
+                    <!-- 模式切换开关 -->
+                    <div class="flex items-center bg-slate-900 rounded-full p-1 border border-slate-600 shadow-inner">
+                        <button onclick="toggleProMode(false)" id="mode-std" class="px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-white transition">标准版</button>
+                        <button onclick="toggleProMode(true)" id="mode-pro" class="px-3 py-1 rounded-full text-xs font-bold text-slate-400 hover:text-white transition flex items-center gap-1"><i class="fa-solid fa-gem text-purple-400"></i> Pro</button>
+                    </div>
+                </div>
+
                 <div class="flex gap-3">
-                    <button onclick="importFromAudit()" class="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-cyan-400 border border-slate-600 transition">
-                        <i class="fa-solid fa-clone"></i> 引用“审单”数据
+                    <button onclick="importFromAudit()" class="text-xs px-3 py-2 bg-slate-700 hover:bg-slate-600 rounded text-cyan-400 border border-slate-600 transition">
+                        <i class="fa-solid fa-clone mr-1"></i> 引用数据
                     </button>
-                    <button onclick="startReportGeneration()" id="btn-gen-report" class="text-xs px-4 py-1.5 bg-green-600 hover:bg-green-500 rounded text-white font-bold shadow-lg transition flex items-center gap-2">
-                        <i class="fa-solid fa-play"></i> 生成报告
+                    
+                    <button onclick="stopGeneration()" id="btn-stop" class="hidden text-xs px-4 py-2 bg-red-600/80 hover:bg-red-500 text-white font-bold rounded shadow-lg border border-red-500 transition animate-pulse">
+                        <i class="fa-solid fa-stop mr-1"></i> 终止
+                    </button>
+
+                    <button onclick="startReport(false)" id="btn-gen-std" class="text-xs px-6 py-2 bg-green-600 hover:bg-green-500 rounded text-white font-bold shadow-lg transition">
+                        <i class="fa-solid fa-play mr-1"></i> 生成报告
+                    </button>
+
+                    <button onclick="startReport(true)" id="btn-gen-pro" class="hidden text-xs px-6 py-2 btn-pro rounded text-white font-bold shadow-lg transition flex items-center gap-2">
+                        <i class="fa-solid fa-rocket"></i> 启动深度研判引擎
                     </button>
                 </div>
             </div>
 
-            <!-- 主体内容：左右分栏 -->
-            <div class="report-container flex-1 overflow-hidden">
+            <!-- 2. 主工作区 -->
+            <div class="flex-1 p-5 overflow-hidden relative">
                 
-                <!-- 左侧：数据源 (Source) -->
-                <div class="report-source-panel flex flex-col w-1/3 min-w-[300px]">
-                    <div class="text-xs text-slate-400 mb-2 flex justify-between">
-                        <span>原始报关数据 / 上下文</span>
-                        <span id="source-status">等待输入...</span>
-                    </div>
-                    <textarea id="reportContextInput" 
-                        class="w-full h-full bg-slate-900/50 border border-slate-600 rounded p-3 text-sm text-slate-300 font-mono resize-none focus:outline-none focus:border-green-500 transition"
-                        placeholder="在此粘贴报关单数据、发票信息或风险备注..."></textarea>
-                </div>
-
-                <!-- 右侧：生成预览 (Preview) -->
-                <div class="report-preview-panel flex-1 flex flex-col relative">
+                <!-- 布局容器 -->
+                <div id="report-layout" class="layout-standard transition-all duration-500 ease-in-out">
                     
-                    <!-- 顶部流程条 -->
-                    <div id="reportTimeline" class="process-timeline h-14 shrink-0">
-                        <div class="text-slate-500 text-sm flex items-center italic">
-                            <i class="fa-solid fa-arrow-left mr-2"></i> 请先录入数据并点击生成
+                    <!-- [左栏] 数据源 -->
+                    <div class="flex flex-col bg-slate-800/50 border border-slate-700 rounded-lg p-4 h-full shadow-inner" id="panel-source">
+                        <div class="text-xs text-slate-400 mb-2 font-bold flex justify-between items-center">
+                            <span><i class="fa-solid fa-database mr-1 text-blue-400"></i> 案件档案 / 研判主题</span>
+                            <span id="source-status" class="text-[10px] bg-slate-700 px-2 rounded hidden">已导入</span>
+                        </div>
+                        <textarea id="reportContextInput" 
+                            class="w-full h-full bg-slate-900/80 border border-slate-600 rounded p-3 text-xs text-slate-300 font-mono resize-none focus:outline-none focus:border-green-500 transition leading-relaxed"
+                            placeholder="请在此输入：
+1. 报关单据原文（触发合规模式）
+2. 或任意研究主题（触发深度研判模式）..."></textarea>
+                    </div>
+
+                    <!-- [中栏] 报告正文 -->
+                    <div class="flex flex-col bg-slate-900 border border-slate-700 rounded-lg h-full relative shadow-xl" id="panel-editor">
+                        <!-- 顶部时间轴 -->
+                        <div id="reportTimeline" class="h-10 bg-slate-800/80 border-b border-slate-700 flex items-center px-4 gap-3 overflow-x-auto whitespace-nowrap shrink-0">
+                            <span class="text-slate-500 text-xs italic"><i class="fa-regular fa-clock mr-1"></i> 等待任务启动...</span>
+                        </div>
+                        
+                        <!-- 正文内容 -->
+                        <div id="reportContent" class="markdown-report flex-1 overflow-y-auto p-8 bg-slate-900 scroll-smooth">
+                            <!-- 占位符 -->
+                            <div class="h-full flex flex-col items-center justify-center text-slate-600 opacity-50">
+                                <i class="fa-solid fa-file-signature text-6xl mb-4"></i>
+                                <p class="text-sm tracking-widest">AI 审计/研判报告生成区</p>
+                            </div>
                         </div>
                     </div>
 
-                    <!-- 报告正文 -->
-                    <div id="reportContent" class="markdown-body flex-1 relative"> <!-- 注意加 relative -->
-                        <!-- AI 生成的内容会流式追加到这里 -->
+                    <!-- [右栏] AI思维工作台 (Pro模式专属) -->
+                    <div class="hidden flex-col gap-4 h-full transition-all duration-500" id="panel-brain">
+                        
+                        <!-- 中部：动态证据流 (占60%) -->
+                        <div class="evidence-container bg-slate-800/80 border border-slate-700 rounded-lg p-4 shadow-lg relative">
+                            <div class="text-xs text-slate-400 mb-3 font-bold flex justify-between items-center border-b border-slate-700 pb-2 shrink-0">
+                                <span><i class="fa-solid fa-magnifying-glass-chart mr-1 text-purple-400"></i> 审计证据链</span>
+                            </div>
+                            <div id="evidence-list" class="evidence-list-container custom-scrollbar">
+                                <!-- 动态插入卡片 -->
+                                <div class="text-center text-slate-600 text-xs mt-10">等待检索启动...</div>
+                            </div>
+                        </div>
+
+                        <!-- 下部：思维日志 (占40%) -->
+                        <div class="terminal-container bg-black/80 border border-slate-700 rounded-lg p-3 font-mono text-xs shadow-inner shrink-0">
+                            <div class="text-slate-500 mb-1 border-b border-slate-800 pb-1 flex justify-between shrink-0">
+                                <span>AI_THOUGHT_LOG</span>
+                                <span class="text-green-500">● LIVE</span>
+                            </div>
+                            <div id="thought-log" class="terminal-log custom-scrollbar">
+                                <!-- 日志流 -->
+                            </div>
+                        </div>
+
                     </div>
 
-                    <!-- 【新增】回到底部按钮 (默认隐藏) -->
-                    <button id="scroll-to-bottom-btn" onclick="scrollToBottom()" 
-                        class="absolute bottom-6 right-6 w-10 h-10 bg-slate-700/80 hover:bg-cyan-600 text-white rounded-full shadow-lg flex items-center justify-center transition-all opacity-0 pointer-events-none z-20">
-                        <i class="fa-solid fa-arrow-down"></i>
-                    </button>
-
-                    <!-- 遮罩层 (初始状态) -->
-                    <div id="report-placeholder" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 z-10">
-                        <i class="fa-solid fa-wand-magic-sparkles text-6xl text-slate-700 mb-4"></i>
-                        <p class="text-slate-500">AI 审计引擎就绪</p>
-                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- ================= 核心脚本逻辑 ================= -->
-    <script>
-        // API 配置
-        const API_URL = 'http://localhost:8000/api/v1/analyze';
-        const QUERY_URL = 'http://localhost:8000/api/v1/query/declaration/'; 
-        const CHAT_URL = 'http://localhost:8000/api/v1/chat';
-        // 【新增】报告生成接口
-        const REPORT_API_URL = 'http://localhost:8000/api/v1/generate_report';
-
-        // 生成一个唯一 ID 作为会话 Session ID (用于 Agent 记忆)
-        const SESSION_ID = 'session-' + Date.now();
-        
-        // --- 模块切换逻辑 ---
-        function switchModule(moduleName) {
-            document.querySelectorAll('.module-content').forEach(el => el.classList.add('hidden'));
-            document.getElementById(`module-${moduleName}`).classList.remove('hidden');
-            
-            // 侧边栏高亮
-            document.querySelectorAll('nav button').forEach(btn => btn.classList.remove('nav-active'));
-            document.getElementById(`nav-${moduleName}`).classList.add('nav-active');
-            
-            // 确保聊天记录区在切换回来时滚动到底部
-            if (moduleName === 'chat') {
-                const historyEl = document.getElementById('chatHistory');
-                historyEl.scrollTop = historyEl.scrollHeight;
-            }
-        }
-
-        // --- [模块A] 核心审单逻辑 (保持不变) ---
-        const SAMPLES = {
-            normal: `报关单号：530120250001\n境内收货人：深圳深南电子科技有限公司\n货物名称：32位数字信号处理器(IC)\nHS编码：85423100\n数量：5000个\n单价：15.00 USD\n总价：75000.00 USD\n币制：美元\n毛重：55.0 KG\n净重：50.0 KG\n原产国：马来西亚\n品牌：TI (德州仪器)\n申报要素：\n  1.品名：32位数字信号处理器；\n  2.品牌：TI；\n  3.型号：TMS320F28335PGFA；\n  4.功能：用于工业电机控制；\n  5.封装形式：LQFP。\n【随附单证信息】\n1. 商业发票(Invoice No. INV-2025001)：\n   - 金额合计：75000.00 USD\n   - 贸易条款：CIF Shenzhen\n2. 装箱单(Packing List)：\n   - 货物数量：5000 PCS\n   - 毛重：55.0 KG\n   - 净重：50.0 KG`,
-            risk: `报关单号：530120250099\n境内收货人：XX商贸行\n货物名称：旧笔记本电脑（拆解用）\nHS编码：84713010\n数量：200台\n单价：5.00 USD\n总价：1000.00 USD\n原产国：未知\n备注：屏幕破损，键盘缺失\n随附单证：发票金额 1000 USD`,
-            sample10: `报关单号：TEST-010\n货物名称：全自动贴片机\nHS编码：84798962\n数量：1 台\n单价：150,000.00 USD\n总价：150,000.00 USD\n毛重：1200.0 KG\n净重：1150.0 KG\n品牌：Panasonic\n申报要素：\n  1.品名：全自动贴片机；\n  2.品牌：Panasonic；\n  3.型号：NPM-D3A；\n  4.功能：用于PCB电路板元件贴装；\n  5.原理：通过吸嘴吸取元件放置于PCB板。\n【随附单证信息】\n发票 INV-998877:\n   - 金额：150,000.00 USD\n装箱单 PL-998877:\n   - 毛重：1200.0 KG\n   - 净重：1150.0 KG`,
-            sample1: `报关单号：TEST-001\n货物名称：DJI Mavic 3 Pro 航拍飞行器\nHS编码：95030039 (其他缩微模型/玩具)\n数量：100台\n单价：1800.00 USD\n总价：180000.00 USD\n申报要素：1.品名：航拍飞行器；2.材质：塑料；3.品牌：DJI；4.型号：Mavic 3 Pro。\n【随附单证】\n发票总额：180,000 USD`,
-            sample2: `报关单号：TEST-002\n货物名称：混合废塑料（未分拣）\n备注：Secondary Raw Material (再生原料)，工厂库存清理，含少量污渍。\nHS编码：39159090\n数量：20 吨\n单价：50.00 USD/吨\n总价：1000.00 USD\n申报要素：1.品名：再生塑料颗粒；2.来源：工业回收。\n【随附单证】\n发票显示：Unsorted Plastic Scraps`,
-            sample3: `报关单号：TEST-003\n货物名称：棉织物\nHS编码：52081100\n数量：1000 米\n毛重：500.0 KG\n净重：480.0 KG\n总价：2000.00 USD\n【随附单证信息】\n1. 装箱单：\n   - 毛重：510.0 KG\n   - 净重：490.0 KG\n   - 数量：1000 Meters`,
-            sample4: `报关单号：TEST-004\n货物名称：汽车避震器\nHS编码：87088090\n数量：200 个\n单价：30.00 USD\n品牌：OEM\n申报要素：\n  1.品名：汽车避震器；\n  2.品牌：OEM；\n  3.型号：通用型；\n  4.适用车型：多款车型。\n【随附单证】\n发票金额一致。`,
-            sample5: `报关单号：TEST-005\n货物名称：塑料圆珠笔\nHS编码：96081000\n数量：5000 支\n单价：100.00 USD\n总价：500,000.00 USD\n原产国：越南\n申报要素：1.品名：圆珠笔；2.品牌：无名；3.材质：塑料。`,
-            sample6: `报关单号：TEST-006\n货物名称：实木吉他\nHS编码：92029000\n数量：10 把\n单价：3000.00 USD\n申报要素：\n  1.品名：吉他；\n  2.面板材质：云杉；\n  3.背侧板材质：巴西玫瑰木 (Dalbergia nigra)。\n【随附单证】\n未提供CITES证明文件。`,
-            sample7: `报关单号：TEST-007\n货物名称：男式皮鞋（展会样品）\nHS编码：64039900\n数量：2 双\n单价：0.00 USD (Free Sample)\n总价：0.00 USD\n贸易方式：货样广告品\n申报要素：1.品名：皮鞋；2.品牌：NIKE；3.材质：牛皮。\n备注：仅供进博会展示，非销售，展示后复运出境。`,
-            sample8: `报关单号：TEST-008\n货物名称：T800级碳纤维预浸料\nHS编码：68151000\n数量：500 KG\n单价：200.00 USD\n申报要素：\n  1.品名：碳纤维；\n  2.拉伸强度：5.8 GPa；\n  3.用途：航空航天部件。\n【随附单证】\n未提及两用物项许可证。`,
-            sample9: `报关单号：TEST-009\n货物名称：LED显示屏\n总价：10,000.00 USD\n【随附单证信息】\n商业发票：\n   - 总金额：10,000.00 EUR\n   - 贸易条款：FOB`
-        };
-
-        function loadSample(type) {
-            const data = SAMPLES[type] || SAMPLES['normal']; 
-            document.getElementById('rawDataInput').value = data;
-        }
-
-        async function searchDeclaration() {
-            const input = document.getElementById('searchInput');
-            const btn = document.getElementById('searchBtn');
-            const entryId = input.value.trim();
-            if (!entryId) { alert("请输入单号！"); return; }
-            const originalBtnContent = btn.innerHTML;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
-            btn.disabled = true;
-            input.disabled = true;
-            try {
-                const response = await fetch(QUERY_URL + entryId);
-                if (response.status === 404) { alert("未找到该报关单数据，请检查单号。"); }
-                else if (response.ok) {
-                    const resJson = await response.json();
-                    const textarea = document.getElementById('rawDataInput');
-                    textarea.value = resJson.text;
-                    textarea.parentElement.classList.add('neon-border');
-                    setTimeout(() => textarea.parentElement.classList.remove('neon-border'), 1000);
-                } else { alert("查询服务异常，请稍后再试。"); }
-            } catch (e) { console.error(e); alert("连接服务器失败！请检查后端是否启动。"); }
-            finally { btn.innerHTML = '查询'; btn.disabled = false; input.disabled = false; input.focus(); }
-        }
-
-        async function startAnalysis() {
-            const rawData = document.getElementById('rawDataInput').value;
-            if (!rawData.trim()) { alert("请输入报关数据！"); return; }
-            const container = document.getElementById('stepsContainer');
-            const finalDiv = document.getElementById('finalResult');
-            const btn = document.getElementById('startBtn');
-            const statusTag = document.getElementById('statusTag');
-            
-            // 清除待机动画，恢复列表布局
-            container.innerHTML = ''; 
-            container.classList.remove('justify-center', 'items-center', 'min-h-[500px]');
-            
-            finalDiv.innerHTML = '';
-            finalDiv.classList.add('hidden');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 研判进行中...';
-            statusTag.classList.remove('hidden');
-
-            try {
-                const response = await fetch(API_URL, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ raw_data: rawData })
-                });
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, { stream: true });
-                    buffer += chunk;
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop(); 
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try { const data = JSON.parse(line.substring(6)); handleEvent(data); }
-                            catch (e) { console.error("JSON Parse Error", e); }
-                        }
-                    }
-                }
-            } catch (e) { console.error(e); alert("连接服务器失败，请确保后台已启动！"); }
-            finally { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-rocket"></i> 开始智能研判'; statusTag.classList.add('hidden'); }
-        }
-
-        function handleEvent(data) {
-            const container = document.getElementById('stepsContainer');
-            switch (data.type) {
-                case 'init':
-                    container.innerHTML = data.steps_info.map(step => `
-                        <div id="step-${step.id}" class="step-card pending bg-slate-800 rounded p-4 flex items-start gap-4 border border-slate-700">
-                            <div class="w-10 h-10 rounded bg-slate-700 flex items-center justify-center text-slate-400 icon-box"><i class="fa-solid fa-${step.icon}"></i></div>
-                            <div class="flex-1"><h3 class="font-bold text-slate-200 text-sm">${step.title}</h3><p class="text-xs text-slate-500 mt-1 msg-box">等待检查...</p></div>
-                            <div class="status-icon text-slate-600"><i class="fa-regular fa-circle"></i></div>
-                        </div>`).join('');
-                    break;
-                case 'step_start':
-                    const stepEl = document.getElementById(`step-${data.rule_id}`);
-                    if (stepEl) {
-                        stepEl.classList.remove('pending'); stepEl.classList.add('status-thinking');
-                        stepEl.querySelector('.msg-box').innerText = data.loading_text; stepEl.querySelector('.msg-box').classList.add('text-blue-400');
-                        stepEl.querySelector('.icon-box').classList.add('bg-blue-900', 'text-blue-300'); stepEl.querySelector('.status-icon').innerHTML = '<i class="fa-solid fa-spinner fa-spin text-blue-500"></i>';
-                    } break;
-                case 'step_result':
-                    const resEl = document.getElementById(`step-${data.rule_id}`);
-                    if (resEl) {
-                        resEl.classList.remove('status-thinking'); resEl.querySelector('.msg-box').classList.remove('text-blue-400');
-                        const isPass = data.status === 'pass'; resEl.classList.add(isPass ? 'pass' : 'risk');
-                        resEl.querySelector('.msg-box').innerText = data.message;
-                        resEl.querySelector('.status-icon').innerHTML = isPass ? '<i class="fa-solid fa-circle-check text-green-500 text-lg"></i>' : '<i class="fa-solid fa-triangle-exclamation text-red-500 text-lg"></i>';
-                        if (!isPass) resEl.querySelector('.msg-box').classList.add('text-red-300');
-                    } break;
-                case 'complete':
-                    const finalDiv = document.getElementById('finalResult'); finalDiv.classList.remove('hidden');
-                    const isSafe = data.final_status === 'pass';
-                    finalDiv.innerHTML = `<div class="p-6 rounded-lg border ${isSafe ? 'border-green-500/50 bg-green-500/10' : 'border-red-500/50 bg-red-500/10'} text-center shadow-lg"><i class="fa-solid ${isSafe ? 'fa-shield-check text-green-500' : 'fa-triangle-exclamation text-red-500'} text-5xl mb-4"></i><h3 class="text-2xl font-bold ${isSafe ? 'text-green-400' : 'text-red-400'}">${isSafe ? '研判通过' : '发现风险'}</h3><p class="mt-2 text-slate-300 whitespace-pre-line text-left bg-slate-900/50 p-4 rounded">${data.summary}</p></div>`;
-                    document.querySelector('#module-audit .overflow-y-auto').scrollTop = 9999; break;
-            }
-        }
-
-        // --- [模块B] 咨询逻辑 (已修复滚动问题) ---
-        async function sendMessage() {
-            const inputEl = document.getElementById('chatInput');
-            const historyEl = document.getElementById('chatHistory');
-            const sendBtn = document.getElementById('sendBtn');
-            const msg = inputEl.value.trim();
-            
-            if (!msg) return;
-
-            // 1. 创建用户消息
-            const userBubble = document.createElement('div');
-            userBubble.className = 'chat-bubble chat-user'; 
-            userBubble.innerText = msg;
-            
-            const userContainer = document.createElement('div');
-            userContainer.className = 'flex justify-end'; 
-            userContainer.appendChild(userBubble);
-            historyEl.appendChild(userContainer);
-
-            // 清空输入框
-            inputEl.value = '';
-            
-            // 【强制滚动】用户刚发消息时，必须滚到底部
-            historyEl.scrollTop = historyEl.scrollHeight;
-
-            // 2. 创建思考占位符
-            const thinkingEl = document.createElement('div');
-            thinkingEl.className = 'chat-thinking';
-            thinkingEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 智能体正在分析问题...';
-            historyEl.appendChild(thinkingEl);
-            
-            // 3. 创建 AI 回复气泡 (初始隐藏)
-            const aiContainer = document.createElement('div');
-            aiContainer.className = 'flex justify-start'; 
-            
-            const aiBubble = document.createElement('div');
-            aiBubble.className = 'chat-bubble chat-ai hidden'; 
-            
-            aiContainer.appendChild(aiBubble);
-            historyEl.appendChild(aiContainer);
-
-            // 【强制滚动】显示思考时，也滚到底部
-            historyEl.scrollTop = historyEl.scrollHeight;
-
-            // 变量准备
-            let fullResponseText = ""; 
-            sendBtn.disabled = true; 
-
-            try {
-                const response = await fetch(CHAT_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: msg, session_id: SESSION_ID }) 
-                });
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop();
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const jsonStr = line.substring(6).trim();
-                                if (!jsonStr) continue;
-                                const data = JSON.parse(jsonStr);
-
-                                // ============================================================
-                                // 🔥 核心修复：智能滚动逻辑 🔥
-                                // 判断用户当前是否在底部 (允许 100px 的误差)
-                                // ============================================================
-                                const isUserAtBottom = (historyEl.scrollHeight - historyEl.scrollTop - historyEl.clientHeight) < 100;
-
-                                if (data.type === 'thinking') {
-                                    thinkingEl.innerHTML = `<i class="fa-solid fa-microchip text-cyan-500 mr-2"></i> ${data.content}`;
-                                    // 只有用户在底部时，才自动滚
-                                    if (isUserAtBottom) historyEl.scrollTop = historyEl.scrollHeight;
-
-                                } else if (data.type === 'answer') {
-                                    thinkingEl.style.display = 'none';
-                                    aiBubble.classList.remove('hidden');
-                                    
-                                    fullResponseText += data.content; 
-                                    aiBubble.innerHTML = marked.parse(fullResponseText);
-                                    
-                                    // 只有用户在底部时，才自动滚
-                                    if (isUserAtBottom) historyEl.scrollTop = historyEl.scrollHeight;
-
-                                } else if (data.type === 'error') {
-                                    thinkingEl.style.display = 'none';
-                                    aiBubble.classList.remove('hidden');
-                                    aiBubble.classList.add('text-red-400', 'bg-red-900/20', 'border-red-500/50');
-                                    aiBubble.innerHTML = `**[系统错误]** ${data.content}`;
-                                    historyEl.scrollTop = historyEl.scrollHeight; // 报错时强制滚一下提示用户
-                                }
-
-                            } catch (e) { 
-                                console.error("JSON Parse Error", e);
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error(e);
-                thinkingEl.innerHTML = `<span class="text-red-400"><i class="fa-solid fa-triangle-exclamation"></i> 连接超时或服务异常</span>`;
-            } finally {
-                sendBtn.disabled = false; 
-            }
-        }
-
-        // --- [模块C] 报告逻辑 (核心更新) ---
-        
-        // 引用审单数据
-        function importFromAudit() {
-            const rawData = document.getElementById('rawDataInput').value;
-            const resultDiv = document.getElementById('finalResult');
-            let riskContext = "";
-            if (!resultDiv.classList.contains('hidden')) { riskContext = "\n\n【风险研判系统结论】\n" + resultDiv.innerText; }
-            if (!rawData && !riskContext) { alert("审单模块暂无数据可引用！"); return; }
-            document.getElementById('reportContextInput').value = "【原始报关数据】\n" + rawData + riskContext;
-            document.getElementById('source-status').innerText = "已导入审单数据";
-            // 自动切换并高亮输入框
-            const textarea = document.getElementById('reportContextInput');
-            textarea.classList.add('neon-border');
-            setTimeout(() => textarea.classList.remove('neon-border'), 1000);
-        }
-
-        // 启动生成
-        async function startReportGeneration() {
-            const rawData = document.getElementById('reportContextInput').value.trim();
-            if (!rawData) { alert("请先输入需要分析的数据！"); return; }
-
-            const btn = document.getElementById('btn-gen-report');
-            const timeline = document.getElementById('reportTimeline');
-            const contentDiv = document.getElementById('reportContent');
-            const placeholder = document.getElementById('report-placeholder');
-
-            // 1. 重置 UI 状态
-            btn.disabled = true;
-            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 生成中...';
-            placeholder.classList.add('hidden'); // 隐藏遮罩
-            contentDiv.innerHTML = ''; // 清空旧报告
-            timeline.innerHTML = '<div class="timeline-step active"><i class="fa-solid fa-brain"></i> <span>规划中...</span></div>';
-            
-            try {
-                const response = await fetch(REPORT_API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ raw_data: rawData })
-                });
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n\n');
-                    buffer = lines.pop();
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            try {
-                                const event = JSON.parse(line.substring(6));
-                                handleReportEvent(event, timeline, contentDiv);
-                            } catch (e) {
-                                console.error("SSE Parse Error:", e);
-                            }
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error(e);
-                contentDiv.innerHTML = `<div class="p-4 text-red-400 border border-red-800 rounded bg-red-900/20">❌ 生成失败: ${e.message}</div>`;
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = '<i class="fa-solid fa-play"></i> 生成报告';
-            }
-        }
-
-        // 处理 SSE 事件 (核心动画逻辑)
-        function handleReportEvent(event, timelineEl, contentEl) {
-            const { type, payload } = event;
-
-            switch (type) {
-                case 'planning':
-                    // 初始规划状态已在 startReportGeneration 中设置，这里可更新提示文字
-                    break;
-                    
-                case 'toc_generated':
-                    // 收到目录，渲染顶部流程条
-                    // payload.steps = ["1. xxx", "2. xxx"]
-                    timelineEl.innerHTML = payload.steps.map((step, idx) => `
-                        <div id="toc-step-${idx}" class="timeline-step">
-                            <i class="fa-regular fa-circle"></i>
-                            <span>${step.split(' ')[1] || step}</span> <!-- 取编号后的文字 -->
-                        </div>
-                    `).join('');
-                    break;
-
-                case 'step_start':
-                    // 某一章开始生成：点亮对应的步骤条，并创建该章的容器
-                    const stepEl = document.getElementById(`toc-step-${payload.index}`);
-                    if (stepEl) {
-                        stepEl.classList.add('active');
-                        stepEl.querySelector('i').className = 'fa-solid fa-circle-notch fa-spin'; // 转圈
-                    }
-                    // 在正文中添加标题占位
-                    contentEl.innerHTML += `<h2 id="section-${payload.index}" class="text-cyan-400 mt-6 mb-2 border-b border-slate-700 pb-2">${payload.title}</h2><div id="content-${payload.index}" class="mb-4"></div>`;
-                    // 自动滚动到底部
-                    contentEl.scrollTop = contentEl.scrollHeight;
-                    break;
-
-                case 'step_stream':
-                    // 收到文字片段，追加到当前章节容器中
-                    const lastContentDiv = contentEl.lastElementChild;
-                    if (lastContentDiv) {
-                        const currentText = lastContentDiv.getAttribute('data-raw') || "";
-                        const newText = currentText + payload.chunk;
-                        lastContentDiv.setAttribute('data-raw', newText);
-                        lastContentDiv.innerHTML = marked.parse(newText);
-                        
-                        // 【核心修复：智能滚动逻辑】
-                        // 1. 计算用户当前是否处于“底部附近”（允许 50px 的误差）
-                        const isUserAtBottom = (contentEl.scrollHeight - contentEl.scrollTop - contentEl.clientHeight) < 50;
-
-                        // 2. 只有当用户原本就在底部时，才自动滚动
-                        if (isUserAtBottom) {
-                            contentEl.scrollTop = contentEl.scrollHeight;
-                        }
-                        // 否则（用户向上翻看了），什么都不做，保持在用户当前看的位置
-                    }
-                    break;
-
-                case 'step_done':
-                    // 某一章完成：变绿，打勾
-                    const doneStepEl = document.getElementById(`toc-step-${payload.index}`);
-                    if (doneStepEl) {
-                        doneStepEl.classList.remove('active');
-                        doneStepEl.classList.add('done');
-                        doneStepEl.querySelector('i').className = 'fa-solid fa-check';
-                    }
-                    break;
-
-                case 'done':
-                    // 全部完成
-                    contentEl.innerHTML += `<div class="mt-8 p-4 bg-green-900/20 border border-green-700 rounded text-center text-green-400 font-bold"><i class="fa-solid fa-check-double"></i> 报告生成完毕</div>`;
-                    break;
-            }
-        }
-
-        // 【新增】监听滚动事件，控制按钮显示
-        const reportContentEl = document.getElementById('reportContent');
-        const scrollBtn = document.getElementById('scroll-to-bottom-btn');
-
-        reportContentEl.addEventListener('scroll', () => {
-            // 如果距离底部超过 100px，显示按钮
-            const distanceToBottom = reportContentEl.scrollHeight - reportContentEl.scrollTop - reportContentEl.clientHeight;
-            if (distanceToBottom > 100) {
-                scrollBtn.classList.remove('opacity-0', 'pointer-events-none');
-            } else {
-                scrollBtn.classList.add('opacity-0', 'pointer-events-none');
-            }
-        });
-
-        // 【新增】点击按钮回到底部
-        function scrollToBottom() {
-            const contentEl = document.getElementById('reportContent');
-            contentEl.scrollTo({ top: contentEl.scrollHeight, behavior: 'smooth' });
-        }
-    </script>
+    <!-- 脚本引入顺序很重要 -->
+    <script src="js/config.js"></script>
+    <script src="js/app.js"></script>
+    <script src="js/audit.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/report.js"></script>
 </body>
 </html>

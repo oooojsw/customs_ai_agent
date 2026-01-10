@@ -115,7 +115,7 @@ class CustomsChatAgent:
         """
         try:
             print(f"\n👉 [Request] {user_input}")
-            yield f"data: {{\"type\": \"thinking\", \"content\": \"智能体正在思考...\"}}\n\n"
+            yield f"data: {json.dumps({'type': 'thinking', 'content': '智能体正在思考...'}, ensure_ascii=False)}\n\n"
             
             config = {"configurable": {"thread_id": session_id}}
             has_sent_content = False
@@ -141,14 +141,15 @@ class CustomsChatAgent:
                     # A. 捕获正文内容
                     if chunk.content:
                         has_sent_content = True
-                        safe_content = chunk.content.replace("\n", "\\n").replace('"', '\\"')
-                        yield f"data: {{\"type\": \"answer\", \"content\": \"{safe_content}\"}}\n\n"
+                        # 使用 json.dumps 自动处理转义，不要手动 replace
+                        payload = {"type": "answer", "content": chunk.content}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                     
                     # B. 捕获 DeepSeek 的思考过程
                     reasoning = chunk.additional_kwargs.get('reasoning_content', '')
                     if reasoning:
-                        safe_reason = reasoning.replace("\n", "\\n").replace('"', '\\"')
-                        yield f"data: {{\"type\": \"thinking\", \"content\": \"{safe_reason}\"}}\n\n"
+                        payload = {"type": "thinking", "content": reasoning}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
                     await asyncio.sleep(0.01)
                     
@@ -156,12 +157,12 @@ class CustomsChatAgent:
                 elif event_type == "on_tool_start":
                     tool_name = event["name"]
                     print(f"🛠️ [工具] {tool_name} 启动")
-                    yield f"data: {{\"type\": \"thinking\", \"content\": \"正在调用工具[{tool_name}]...\"}}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'正在调用工具[{tool_name}]...'}, ensure_ascii=False)}\n\n"
 
                 # 3. 监听工具结束
                 elif event_type == "on_tool_end":
                     print(f"✅ [工具] 完成")
-                    yield f"data: {{\"type\": \"thinking\", \"content\": \"查询完成，正在生成回答...\"}}\n\n"
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': '查询完成，正在生成回答...'}, ensure_ascii=False)}\n\n"
 
             # =======================================================
             # 保底逻辑
@@ -172,8 +173,8 @@ class CustomsChatAgent:
                 if final_state.values and "messages" in final_state.values:
                     last_msg = final_state.values["messages"][-1]
                     if isinstance(last_msg, AIMessage) and last_msg.content:
-                        safe = last_msg.content.replace("\n", "\\n").replace('"', '\\"')
-                        yield f"data: {{\"type\": \"answer\", \"content\": \"{safe}\"}}\n\n"
+                        payload = {"type": "answer", "content": last_msg.content}
+                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
             print("✅ [请求结束] 完成\n")
 
@@ -181,4 +182,5 @@ class CustomsChatAgent:
             print(f"❌ [Error] {e}")
             import traceback
             traceback.print_exc()
-            yield f"data: {{\"type\": \"error\", \"content\": \"系统错误: {str(e)}\"}}\n\n"
+            payload = {"type": "error", "content": f"系统错误: {str(e)}"}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"

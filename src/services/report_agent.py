@@ -1,152 +1,343 @@
 import json
 import asyncio
 import httpx
-from typing import List, AsyncGenerator
+import random
+import re
+from typing import List, AsyncGenerator, Set
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pathlib import Path
 
 # 导入配置
 from src.config.loader import settings
 
+# 知识库容错导入
+try:
+    from src.services.knowledge_base import KnowledgeBase
+except ImportError:
+    KnowledgeBase = None
+
 class ComplianceReporter:
     def __init__(self):
-        print("📑 [System] 初始化合规报告生成引擎 (DeepSeek Powered)...")
+        print("📑 [System] 初始化双模研判引擎 (Hybrid Deep Research Engine)...")
         
-        # 1. 网络层配置 (修复点：区分 Sync 和 Async Transport)
+        # 1. 网络层配置
         proxy_url = settings.HTTP_PROXY
-        
-        # ❌ 错误代码 (原): transport = httpx.HTTPTransport(...)
-        # ✅ 修正代码 (新): 使用 AsyncHTTPTransport
         async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
-        
-        # 创建异步客户端
         self.async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
 
-        # 2. LLM 初始化 (DeepSeek)
+        # 2. LLM 初始化 (R1 逻辑最强)
         self.llm = ChatOpenAI(
             model=settings.DEEPSEEK_MODEL,
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
-            temperature=0.3, # 报告需要相对严谨
-            # 关键：注入修复后的异步客户端
+            temperature=0.3, 
             http_async_client=self.async_client,
-            streaming=True
+            streaming=True,
+            model_kwargs={"stream": True}
         )
 
-        # 3. 加载 SOP
-        self.sop_content = self._load_sop()
+        # 3. 知识库检索器
+        self.retriever = None
+        if KnowledgeBase:
+            try:
+                kb = KnowledgeBase()
+                # 通用检索设置，具体策略在 Prompt 里微调
+                self.retriever = kb.vector_store.as_retriever(search_kwargs={"k": 6})
+            except Exception as e:
+                print(f"⚠️ 知识库加载失败: {e}")
 
-    def _load_sop(self) -> str:
-        """加载系统级 SOP 文件"""
+        # 4. 加载双模 SOP
+        self.sop_customs = self._load_specific_sop("sop_process.txt", "标准海关合规审查SOP")
+        self.sop_research = self._load_specific_sop("sop_deep_research.txt", "通用深度研判SOP")
+
+    def _load_specific_sop(self, filename: str, default_text: str) -> str:
         try:
-            # 获取 config/sop_process.txt 的绝对路径
             base_dir = Path(__file__).resolve().parent.parent.parent
-            sop_path = base_dir / "config" / "sop_process.txt"
-            
+            sop_path = base_dir / "config" / filename
             if sop_path.exists():
                 with open(sop_path, "r", encoding="utf-8") as f:
                     return f.read()
-            return "无系统SOP文件，请根据通用海关法规进行分析。"
-        except Exception as e:
-            print(f"⚠️ SOP 加载失败: {e}")
-            return "无系统SOP文件。"
+            return default_text
+        except:
+            return default_text
 
-    async def generate_stream(self, raw_data: str) -> AsyncGenerator[str, None]:
+    def _detect_mode(self, text: str) -> str:
         """
-        核心生成流：规划 -> 执行循环 -> 完结
-        yield: SSE 格式字符串
+        简单高效的规则路由：判断是否为报关单
         """
-        try:
-            # --- 阶段 1: 规划 (Planning) ---
-            yield self._sse_pack("planning", "正在分析数据并根据 SOP 规划报告目录...")
-            
-            # 调用 LLM 生成目录
-            toc_list = await self._generate_toc(raw_data)
-            
-            # 推送目录给前端渲染
-            yield self._sse_pack("toc_generated", {"steps": toc_list})
-            await asyncio.sleep(0.5) 
-
-            # --- 阶段 2: 执行 (Executing) ---
-            # 维护对话历史 (Context Caching)
-            history_messages = [
-                SystemMessage(content=f"""你是一名资深海关合规审计专家。
-依据以下 SOP 标准流程：
-{self.sop_content}
-
-你需要撰写一份专业的《进出口货物合规性审查报告》。
-请保持语气客观、专业，重点指出风险点。不要使用 Markdown 代码块包裹整个回复。"""),
-                HumanMessage(content=f"这是待审查的报关数据：\n{raw_data}\n\n请按照计划撰写报告。")
-            ]
-
-            # 循环生成每一章
-            for index, section_title in enumerate(toc_list):
-                # 2.1 推送状态：开始写这一章
-                yield self._sse_pack("step_start", {"index": index, "title": section_title})
-                
-                # 2.2 构建当前章节的 Prompt
-                step_prompt = f"请撰写报告的第 {index + 1} 部分：【{section_title}】。\n要求：内容详实，如果引用了法规请注明。直接输出 Markdown 内容，不要包含'好的'、'下面是...'等废话。"
-                
-                # 临时消息列表
-                current_turn_messages = history_messages + [HumanMessage(content=step_prompt)]
-                
-                section_content = ""
-                
-                # 2.3 流式生成内容
-                async for chunk in self.llm.astream(current_turn_messages):
-                    if chunk.content:
-                        content = chunk.content
-                        section_content += content
-                        yield self._sse_pack("step_stream", {"chunk": content})
-                
-                # 2.4 上下文缓存：将结果存入历史
-                history_messages.append(HumanMessage(content=step_prompt))
-                history_messages.append(AIMessage(content=section_content))
-                
-                # 2.5 推送状态：这一章完成
-                yield self._sse_pack("step_done", {"index": index})
-                
-                await asyncio.sleep(0.5)
-
-            # --- 阶段 3: 完结 ---
-            yield self._sse_pack("done", {})
-            
-        except Exception as e:
-            print(f"❌ 报告生成流中断: {e}")
-            # 发送错误给前端
-            yield f"data: {json.dumps({'type': 'error', 'payload': str(e)}, ensure_ascii=False)}\n\n"
-
-    async def _generate_toc(self, raw_data: str) -> List[str]:
-        """使用 LLM 生成目录结构 (JSON)"""
-        prompt = f"""
-分析以下报关数据和 SOP，列出合规审查报告的章节目录。
-SOP摘要: {self.sop_content[:200]}...
-数据摘要: {raw_data[:200]}...
-
-要求：
-1. 只返回一个 JSON 字符串数组。
-2. 包含 3-5 个核心章节标题。
-3. 必须包含“风险分析”和“改进建议”相关的章节。
-4. 严禁输出 Markdown 代码块标记，只输出纯数组字符串。
-"""
-        messages = [
-            SystemMessage(content="你是一个JSON生成器。只输出JSON数组，不要任何其他废话。"),
-            HumanMessage(content=prompt)
-        ]
+        # 关键词命中 2 个以上即视为报关单
+        keywords = ["报关单", "HS编码", "申报要素", "境内收货人", "成交方式", "提运单号", "毛重", "净重"]
+        hit_count = sum(1 for k in keywords if k in text)
         
-        try:
-            response = await self.llm.ainvoke(messages)
-            content = response.content.strip()
-            content = content.replace("```json", "").replace("```", "").strip()
-            
-            toc = json.loads(content)
-            if isinstance(toc, list):
-                return toc
-            return ["1. 综合分析", "2. 风险提示", "3. 改进建议"]
-        except Exception as e:
-            print(f"❌ 目录生成失败: {e}")
-            return ["1. 数据概览", "2. 详细审查", "3. 总结"]
+        if hit_count >= 2:
+            return "CUSTOMS"
+        return "RESEARCH"
 
-    def _sse_pack(self, event_type: str, data: any) -> str:
-        return f"data: {json.dumps({'type': event_type, 'payload': data}, ensure_ascii=False)}\n\n"
+    async def generate_stream(self, input_text: str) -> AsyncGenerator[str, None]:
+        """
+        智能双模生成流 (优化版：最后一章跳过 RAG)
+        """
+        # 1. 路由判断
+        mode = self._detect_mode(input_text)
+        
+        if mode == "CUSTOMS":
+            active_sop = self.sop_customs
+            role_desc = "海关高级查验专家"
+            task_desc = "进行进出口合规性审查"
+            yield self._sse("thought", "🔍 检测到报关单据，已切换至【合规审计模式】...")
+        else:
+            active_sop = self.sop_research
+            role_desc = "深度档案分析师"
+            task_desc = "进行本地知识库深度挖掘与研判"
+            yield self._sse("thought", "🧠 检测到通用问题，已切换至【深度研判模式 (DeepResearch)】...")
+        
+        await asyncio.sleep(0.5)
+
+        # 初始化状态
+        state = {
+            "topic": input_text,
+            "mode": mode,
+            "toc": [],
+            "notebook": [],
+            "used_doc_hashes": set(), 
+            "full_report_text": "",
+        }
+
+        try:
+            # ==========================================
+            # 阶段 1: 动态规划 (Planning)
+            # ==========================================
+            yield self._sse("thought", f"正在基于[{role_desc}]视角构建大纲...")
+            
+            toc_list = await self._generate_toc(input_text, mode, active_sop)
+            state["toc"] = toc_list
+            yield self._sse("toc", toc_list)
+            
+            # ==========================================
+            # 阶段 2: 章节循环 (Section Loop)
+            # ==========================================
+            for i, section_title in enumerate(toc_list):
+                # 判断是否是最后一章
+                is_last_chapter = (i == len(toc_list) - 1)
+                
+                yield self._sse("step_start", {"index": i, "title": section_title})
+                
+                section_search_history = []
+                section_notes = []
+
+                # --- 分支逻辑：如果是最后一章，跳过 RAG ---
+                if is_last_chapter:
+                    yield self._sse("thought", "正在回顾全文，进行逻辑收束与最终研判 (Skip RAG)...")
+                    # 模拟一点思考时间，让前端体验更好
+                    await asyncio.sleep(1.5)
+                    section_notes.append("（本章为总结章节，基于前文所有分析得出结论，不再检索新证据）")
+                
+                else:
+                    # --- 普通章节：正常进行 RAG 挖掘 ---
+                    research_rounds = 2 if mode == "CUSTOMS" else 3
+                    
+                    for round_idx in range(1, research_rounds + 1):
+                        # ... (这里保持原有的 RAG 逻辑不变) ...
+                        previous_context = state["full_report_text"][-800:] if state["full_report_text"] else "（首章）"
+                        
+                        if mode == "CUSTOMS":
+                            strategy_instruction = "请提取当前章节需要的法规依据、HS编码规则或监管要求作为检索词。"
+                        else:
+                            strategy_instruction = "请思考为了完善本章论点，还需要在本地文档中挖掘什么具体的证据或细节？"
+
+                        strategy_prompt = f"""
+你是一名{role_desc}。正在撰写：《{section_title}》。
+原始输入：{input_text[:300]}...
+
+【前文摘要】
+{previous_context}
+
+【已收集笔记】
+{"".join(section_notes[-2:]) if section_notes else "暂无"}
+
+【指令】
+{strategy_instruction}
+请输出一个具体的、从未搜过的检索关键词。
+"""
+                        q_res = await self.llm.ainvoke([HumanMessage(content=strategy_prompt)])
+                        query = q_res.content.strip().replace('"', '').replace("'", "")
+                        section_search_history.append(query)
+                        
+                        yield self._sse("thought", f"[Round {round_idx}] 正在知识库比对：'{query}'")
+                        yield self._sse("rag_search", {"query": query})
+                        
+                        # 执行检索
+                        snippet = ""
+                        score = 0.0
+                        filename = "LocalDB"
+
+                        if self.retriever:
+                            try:
+                                docs = await self.retriever.ainvoke(query)
+                                for doc in docs:
+                                    doc_hash = hash(doc.page_content[:30])
+                                    if doc_hash not in state["used_doc_hashes"]:
+                                        snippet = doc.page_content
+                                        filename = Path(doc.metadata.get("source", "unknown")).name
+                                        score = 0.85
+                                        state["used_doc_hashes"].add(doc_hash)
+                                        break 
+                                if not snippet and docs:
+                                    snippet = docs[0].page_content 
+                                    score = 0.65
+                            except Exception as e:
+                                print(f"检索错: {e}")
+
+                        if not snippet:
+                            snippet = "（未在本地知识库中找到直接对应条款，需依据通用专业知识判断）"
+                            score = 0.1
+
+                        yield self._sse("rag_result", {
+                            "filename": filename,
+                            "score": score,
+                            "snippet": snippet[:100] + "..."
+                        })
+
+                        note_content = f"关键词[{query}] -> 发现：{snippet}"
+                        section_notes.append(note_content)
+                        state["notebook"].append(note_content)
+                        await asyncio.sleep(0.5)
+
+                # --- 子循环结束，撰写正文 ---
+                
+                # 动态调整写作 Prompt
+                previous_context_full = state["full_report_text"][-1500:] if state["full_report_text"] else "无"
+                
+                if is_last_chapter:
+                    yield self._sse("thought", "正在综合前文所有观点，生成最终结论...")
+                    instruction_special = "这是报告的【最终章】。请不要引入新的事实证据，而是对【前文脉络】中提到的核心问题、风险点或发现进行高度概括和总结。给出明确的下一步建议。"
+                else:
+                    yield self._sse("thought", "证据链闭合，正在生成专业分析报告...")
+                    instruction_special = f"请基于【核心证据】撰写本章。{role_desc}风格。承接前文，逻辑通顺。"
+
+                write_prompt = f"""
+你是一名{role_desc}。请撰写《{section_title}》。
+
+【任务目标】
+{task_desc}
+
+【前文脉络 (基于此进行衔接/总结)】
+...{previous_context_full}
+
+【核心证据】
+{json.dumps(section_notes, ensure_ascii=False)}
+
+【原始输入】
+{input_text}
+
+【写作指令】
+1. {instruction_special}
+2. 直接输出 Markdown 正文。
+"""
+                current_section_content = ""
+                async for chunk in self.llm.astream([HumanMessage(content=write_prompt)]):
+                    if chunk.content:
+                        current_section_content += chunk.content
+                        yield self._sse("report_chunk", chunk.content)
+                
+                state["full_report_text"] += f"\n\n## {section_title}\n\n{current_section_content}"
+                yield self._sse("step_done", {"index": i})
+
+            # ==========================================
+            # 阶段 3: 完结
+            # ==========================================
+            yield self._sse("thought", "报告生成完毕。")
+            yield self._sse("done", {})
+
+        except Exception as e:
+            print(f"❌ 生成异常: {e}")
+            import traceback
+            traceback.print_exc()
+            yield self._sse("error", str(e))
+
+    async def _generate_toc(self, topic: str, mode: str, sop: str) -> List[str]:
+        """
+        双模目录生成器 (带清洗功能，修复乱码问题)
+        """
+        if mode == "CUSTOMS":
+            advice_structure = """
+            建议包含以下章节（请只返回标题字符串）：
+            1. 申报要素与归类复核
+            2. 价格真实性与逻辑审查
+            3. 贸易管制与准入风险
+            4. 综合结论与整改建议
+            """
+        else:
+            advice_structure = """
+            建议包含 4-6 个章节（请只返回标题字符串）：
+            - 第一章必须是背景/现状概述
+            - 中间章节按主题逻辑展开
+            - 最后一章是结论与证据缺口说明
+            """
+
+        prompt = f"""
+你是一名高级分析师。请根据用户输入和SOP设计目录。
+
+【用户输入】
+{topic}
+
+【SOP】
+{sop}
+
+【结构建议】
+{advice_structure}
+
+【严格格式要求】
+1. 必须返回一个纯 JSON 字符串数组，例如：["1. 章节名称", "2. 章节名称"]。
+2. 严禁返回对象或字典（不要使用 key-value 结构）。
+3. 不要 Markdown 标记。
+"""
+        try:
+            res = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            # 1. 清洗 Markdown 标记
+            text = res.content.replace("```json", "").replace("```", "").strip()
+            
+            # 2. 解析 JSON
+            parsed = json.loads(text)
+            
+            # 3. 【核心修复】强制扁平化处理
+            # 无论 LLM 返回的是 [{"title": "A"}, {"title": "B"}] 还是 ["A", "B"]
+            # 我们都把它统一转成 ["1. A", "2. B"]
+            clean_toc = []
+            
+            if isinstance(parsed, list):
+                for idx, item in enumerate(parsed):
+                    title = ""
+                    if isinstance(item, str):
+                        title = item
+                    elif isinstance(item, dict):
+                        # 如果模型不听话返回了对象，尝试提取 value 中看起来像标题的字段
+                        # 优先找 'title', 'name', 'chapter'，找不到就取第一个 value
+                        for key in ['title', 'chapterTitle', 'chapter_name', 'name', 'header']:
+                            if key in item:
+                                title = str(item[key])
+                                break
+                        if not title and item.values():
+                            title = str(list(item.values())[0])
+                    
+                    # 移除已有的序号，重新编号，保证前端显示整齐
+                    if title:
+                        # 去掉开头的 "1.", "1 ", "Chapter 1" 等
+                        clean_title = re.sub(r'^(\d+\.|Chapter\s*\d+|第.+章)\s*', '', title).strip()
+                        clean_toc.append(f"{idx + 1}. {clean_title}")
+            
+            if not clean_toc:
+                raise ValueError("Parsed TOC is empty")
+                
+            return clean_toc
+
+        except Exception as e:
+            print(f"❌ 目录生成解析失败: {e}, 启用兜底策略")
+            # 兜底目录
+            if mode == "CUSTOMS":
+                return ["1. 申报要素复核", "2. 价格逻辑分析", "3. 监管证件筛查", "4. 结论建议"]
+            return ["1. 背景概述", "2. 核心事实梳理", "3. 深度关联分析", "4. 结论与展望"]
+
+    def _sse(self, type_str, payload):
+        return f"data: {json.dumps({'type': type_str, 'payload': payload}, ensure_ascii=False)}\n\n"

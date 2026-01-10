@@ -22,3 +22,6 @@ CLAUDE.md
 .claude/agents/kfc/spec-test.md
 .claude/settings/kfc-settings.json
 .claude/system-prompts/spec-workflow-starter.md
+.dockerignore
+docker-compose.yml
+Dockerfile
