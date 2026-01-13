@@ -10,6 +10,11 @@ os.environ['HF_HUB_DISABLE_SSL_VERIFY'] = '1'
 os.environ['CURL_CA_BUNDLE'] = ''
 # ============================================================
 
+# 修复 Windows 控制台编码问题
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 from langgraph.prebuilt import create_react_agent 
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import Tool
@@ -21,16 +26,16 @@ from src.config.loader import settings
 # 知识库容错
 try:
     from src.services.knowledge_base import KnowledgeBase
-    print("✅ KnowledgeBase 模块加载成功")
+    print("[ChatAgent] KnowledgeBase module loaded")
 except ImportError as e:
-    print(f"⚠️ [System] KnowledgeBase 导入失败: {e}")
+    print(f"[Warning] KnowledgeBase import failed: {e}")
     KnowledgeBase = None
 
 MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
     def __init__(self):
-        print("🔗 [System] 初始化 Agent (DeepSeek 兼容版)...")
+        print("[System] Initializing Agent (DeepSeek compatible)...")
         
         # --- 1. 网络客户端配置 ---
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
@@ -81,7 +86,7 @@ class CustomsChatAgent:
                     description="查询海关法规、政策、HS编码或报关流程。涉及此类问题必须使用此工具。"
                 )
                 tools.append(retriever_tool)
-                print("✅ 知识库工具加载成功")
+                print("[ChatAgent] Knowledge base tools loaded")
             except Exception as e:
                 print(f"❌ 知识库加载失败: {e}")
         
@@ -101,7 +106,7 @@ class CustomsChatAgent:
             tools=tools,
             checkpointer=MEMORY,
         )
-        print("✅ 智能体构建完成")
+        print("[ChatAgent] Agent construction complete")
 
         # 预热
         if self.retriever:
@@ -161,7 +166,7 @@ class CustomsChatAgent:
 
                 # 3. 监听工具结束
                 elif event_type == "on_tool_end":
-                    print(f"✅ [工具] 完成")
+                    print(f"[ChatAgent] Tool complete")
                     yield f"data: {json.dumps({'type': 'thinking', 'content': '查询完成，正在生成回答...'}, ensure_ascii=False)}\n\n"
 
             # =======================================================
@@ -176,7 +181,7 @@ class CustomsChatAgent:
                         payload = {"type": "answer", "content": last_msg.content}
                         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-            print("✅ [请求结束] 完成\n")
+            print("[ChatAgent] Request complete")
 
         except Exception as e:
             print(f"❌ [Error] {e}")

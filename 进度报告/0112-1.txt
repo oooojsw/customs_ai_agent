@@ -1,0 +1,59 @@
+🛠️ 智能报关系统 (v3.0 Pro) 故障修复与演进报告
+项目状态：Debugging (调试中)
+当前症状：前端点击“生成报告”后，界面长时间停留在“正在连接大脑...”或报错，后端曾出现 500 错误及网络中断。
+📅 第一阶段：环境与依赖修复 (Environment & Dependencies)
+症状：无法启动 python src/main.py，直接报错退出。
+1.1 语法错误 (IndentationError)
+错误：src/api/routes.py 第 31 行 if 语句下的代码块没有缩进。
+原因：Python 对缩进敏感，复制粘贴代码时格式丢失。
+修复：修正了缩进格式。
+1.2 模块缺失 (ImportError)
+错误：ImportError: cannot import name 'ImageTextExtractor'。
+原因：routes.py 引用了 image_extractor.py，但该文件不存在或类未定义（这是同事分支的新功能，你本地缺失）。
+修复：新建了 src/services/image_extractor.py，并提供了一个 Mock 实现（模拟 OCR 返回），保证服务能启动。
+1.3 依赖包缺失 (ModuleNotFoundError)
+错误：
+Form data requires "python-multipart"
+No module named 'langchain_huggingface'
+No module named 'requests'
+原因：新增的图片上传和 RAG 本地模型功能引入了新的 Python 库，但 requirements.txt 未更新。
+修复：补充安装了 python-multipart, langchain-huggingface, requests, openai。
+📅 第二阶段：前端连接修复 (Connectivity)
+症状：服务启动成功，但前端点击按钮报错 Failed to fetch 或一直转圈，后端控制台无任何日志打印。
+2.1 跨域与地址解析 (CORS / Localhost)
+错误：前端请求发往 http://localhost:8000，但在 Windows 环境下，localhost 解析不稳定，或被系统防火墙拦截。
+尝试：
+清理浏览器缓存 -> 无效。
+改为 127.0.0.1 -> 无效。
+更换端口 8080 -> 无法访问。
+最终修复：修改 web/js/config.js，将 BASE_URL 改为相对路径 (/api/v1)。这利用了浏览器自动匹配域名的特性，彻底解决了跨域和地址解析问题。
+2.2 请求体格式 (Body Parsing)
+排查：通过 curl 命令行测试，确认后端接口是通的 ({"detail":"There was an error parsing the body"})，证明后端端口正常，只是前端发送的数据或路径有问题。
+📅 第三阶段：后端逻辑崩溃修复 (Backend 500 Error)
+症状：前端不再报 Fetch Error，网络通了，但返回 500 Internal Server Error，后端控制台打印错误堆栈。
+3.1 参数不匹配 (TypeError: arguments mismatch)
+错误：TypeError: _generate_toc() takes 2 positional arguments but 4 were given。
+原因：
+调用处 (generate_stream)：传入了 3 个参数 (topic, mode, sop)。
+定义处 (_generate_toc)：只定义了接收 1 个参数 (raw_data)。
+修复：修改 src/services/report_agent.py 中的 _generate_toc 函数签名，使其接收 (self, topic, mode, sop) 三个参数。
+3.2 属性丢失 (AttributeError)
+错误：AttributeError: 'KnowledgeBase' object has no attribute 'search_with_score'。
+原因：report_agent.py 调用了知识库的新方法 search_with_score（用于带分数的检索），但 knowledge_base.py 是旧版本，没有这个方法。
+修复：更新 src/services/knowledge_base.py，补全了 search_with_score 方法，并加入了 FAISS 分数转换逻辑。
+📅 第四阶段：网络层与性能优化 (Network & Stability)
+症状：初始化过程中出现 ConnectionAbortedError 10053，或者界面卡在“正在连接大脑...”。
+4.1 SSL 证书问题
+错误：Python httpx 库在使用本地代理（如 Clash）时，因证书校验失败而切断连接。
+修复：在 report_agent.py 和 chat_agent.py 的 HTTP 客户端初始化中，强制添加 verify=False 参数。
+4.2 线程阻塞 (Blocking)
+隐患：FAISS 向量检索是 CPU 密集型同步操作，在大并发或模型加载时会卡死 FastAPI 的主事件循环 (Event Loop)，导致前端收不到心跳包。
+修复：在 knowledge_base.py 中使用 asyncio.to_thread 将搜索操作放入线程池执行，实现真正的异步非阻塞。
+🏁 当前待验证状态 (Next Step)
+经过上述所有修复，理论上：
+环境：依赖齐全。
+网络：前端能找到后端（相对路径），后端能连通 DeepSeek（SSL 绕过）。
+代码：函数参数匹配，方法定义完整。
+如果现在仍然“卡在初始化”：
+那只剩下最后一种可能 —— LLM 响应极慢或不返回数据。
+因为 DeepSeek 近期负载很高，或者是你的 API Key 额度耗尽/受限，导致 await self.llm.ainvoke(...) 这行代码无限挂起，没有抛错，也没有返回。

@@ -1,5 +1,7 @@
 // API 配置
-const BASE_URL = 'http://localhost:8000/api/v1';
+// 强制使用 127.0.0.1 避免 Windows 下 localhost 解析错误
+const BASE_URL = 'http://127.0.0.1:8000/api/v1'; 
+
 const REPORT_API_URL = `${BASE_URL}/generate_report`;
 const CHAT_URL = `${BASE_URL}/chat`;
 const ANALYZE_URL = `${BASE_URL}/analyze`;

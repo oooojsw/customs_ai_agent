@@ -39,7 +39,9 @@ class RiskAnalysisOrchestrator:
                 {
                     "id": rule['id'],
                     "title": rule['display']['title'],
-                    "icon": rule['display']['icon']
+                    "icon": rule['display']['icon'],
+                    "rag_file": rule.get('rag_file', ''),
+                    "rag_filename": rule.get('rag_file', '').replace('rag_', '').replace('.txt', '')
                 } for rule in self.active_rules
             ]
         }
@@ -112,11 +114,11 @@ class RiskAnalysisOrchestrator:
 
         # --- 阶段 3: 最终总结 ---
         # 所有步骤跑完，给出一个总结论
-        final_conclusion = "✅ 建议放行：未发现明显风险点。"
+        final_conclusion = "[OK] 建议放行：未发现明显风险点。"
         final_status = "pass"
         
         if risk_count > 0:
-            final_conclusion = f"⚠️ 建议转人工查验：共发现 {risk_count} 项风险指标。\n" + "\n".join(risk_details)
+            final_conclusion = f"[Warning] 建议转人工查验：共发现 {risk_count} 项风险指标。\n" + "\n".join(risk_details)
             final_status = "risk"
 
         yield self._format_sse({

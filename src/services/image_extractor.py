@@ -47,7 +47,7 @@ class ImageTextExtractor:
             print("INFO: Gemini-Flash 识别成功。")
             return text, self._gemini_model
         except Exception as e:
-            print(f"⚠️ 警告: Gemini-Flash 识别失败: {e}")
+            print(f"[Warning] 警告: Gemini-Flash 识别失败: {e}")
             # 3. 备用模型 (Azure OpenAI)
             if self._azure_client:
                 print("INFO: 已切换到 Azure OpenAI 模型进行重试...")
@@ -58,10 +58,10 @@ class ImageTextExtractor:
                     print("INFO: Azure OpenAI 识别成功。")
                     return text, self._azure_deployment
                 except Exception as az_e:
-                    print(f"❌ 错误: Azure OpenAI 备用模型也识别失败: {az_e}")
+                    print(f"[Error] 错误: Azure OpenAI 备用模型也识别失败: {az_e}")
                     raise RuntimeError("主模型和备用模型均无法处理该图片") from az_e
             else:
-                print("❌ 错误: 未配置 Azure OpenAI 备用模型，无法重试。")
+                print("[Error] 错误: 未配置 Azure OpenAI 备用模型，无法重试。")
                 raise RuntimeError("Gemini 图片识别失败，且未配置备用模型") from e
 
 
@@ -96,7 +96,7 @@ class ImageTextExtractor:
                 reason = result_text.replace("否", "").strip("，。,. ")
                 return False, reason if reason else "内容不符"
         except Exception as e:
-            print(f"⚠️ 警告: 图片内容校验步骤失败: {e}。为保证流程继续，暂时跳过校验。")
+            print(f"[Warning] 警告: 图片内容校验步骤失败: {e}。为保证流程继续，暂时跳过校验。")
             # 在校验失败时默认通过，以避免网络问题导致整个流程中断
             return True, "校验异常，已跳过"
 

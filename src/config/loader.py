@@ -13,12 +13,12 @@ class ConfigLoader:
         self.BASE_DIR = Path(__file__).resolve().parent.parent.parent
         self.ENV_PATH = self.BASE_DIR / ".env"
         
-        print(f"📂 [Config] 正在加载配置文件: {self.ENV_PATH}")
+        print(f"[Config] Loading config file: {self.ENV_PATH}")
 
         if self.ENV_PATH.exists():
             load_dotenv(dotenv_path=self.ENV_PATH, override=True) # override=True 强制覆盖系统变量
         else:
-            print(f"⚠️ [Config] 警告: 未找到 .env 文件，将依赖系统环境变量")
+            print(f"[Config] Warning: .env file not found, using system environment variables")
 
         # --- 加载具体配置 ---
         
@@ -52,12 +52,12 @@ class ConfigLoader:
     def validate(self):
         """启动前自检"""
         # 打印部分 Key 用于调试 (只显示前4位)
-        masked_key = self.GOOGLE_API_KEY[:4] + "****" if self.GOOGLE_API_KEY else "❌ 未设置"
-        print(f"🔑 [Config] Google API Key: {masked_key}")
-        
+        masked_key = self.GOOGLE_API_KEY[:4] + "****" if self.GOOGLE_API_KEY else "Not set"
+        print(f"[Config] Google API Key: {masked_key}")
+
         if not self.GOOGLE_API_KEY:
             # 这里不抛出异常，防止导致 DeepSeek 模块也无法启动
-            print("⚠️ [Config] 警告: GOOGLE_API_KEY 为空，审单功能将无法使用 Gemini！")
+            print("[Config] Warning: GOOGLE_API_KEY is empty, Gemini features will be unavailable!")
 
 # 实例化单例
 settings = ConfigLoader()

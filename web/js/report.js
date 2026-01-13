@@ -1,5 +1,5 @@
 // ----------------------------------------------------
-// 模块 C: 智能建议书 (Pro 核心)
+// 模块 C: 智能建议书 (Pro 核心 - 满血修复版)
 // ----------------------------------------------------
 
 let isProMode = false;
@@ -48,7 +48,7 @@ async function startReport(isPro) {
     contentEl.innerHTML = '';
     
     const timelineEl = document.getElementById('reportTimeline');
-    timelineEl.innerHTML = '<span class="text-green-400 animate-pulse"><i class="fa-solid fa-circle-notch fa-spin mr-1"></i> 初始化中...</span>';
+    timelineEl.innerHTML = '<span class="text-green-400 animate-pulse"><i class="fa-solid fa-circle-notch fa-spin mr-1"></i> 正在连接大脑...</span>';
 
     // Pro UI Reset
     if (isPro) {
@@ -56,32 +56,30 @@ async function startReport(isPro) {
         document.getElementById('thought-log').innerHTML = '';
     }
 
-    // 【中断控制】创建新的控制器
     reportController = new AbortController();
 
     try {
+        // 在 fetch 之前打印
+        const requestBody = JSON.stringify({ raw_data: raw });
+        console.log("准备发送数据:", requestBody); // <--- 加这行
+
         const res = await fetch(REPORT_API_URL, {
             method: 'POST', 
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ raw_data: raw }),
-            signal: reportController.signal // 绑定中断信号
+            body: requestBody, // <--- 使用变量
+            signal: reportController.signal 
         });
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
-        
-        // 🔥🔥🔥 关键修复：这里必须是 let，不能是 const 🔥🔥🔥
         let buffer = ''; 
 
         while(true) {
             const {done, value} = await reader.read();
             if(done) break;
             
-            // 这里的 += 赋值操作要求 buffer 必须是变量
             buffer += decoder.decode(value, {stream: true});
             const lines = buffer.split('\n\n');
-            
-            // 这里的赋值操作也要求 buffer 必须是变量
             buffer = lines.pop();
 
             for (const line of lines) {
@@ -103,7 +101,6 @@ async function startReport(isPro) {
             contentEl.innerHTML = `<div class="text-red-500 p-4">生成错误: ${e.message}</div>`;
         }
     } finally {
-        // 清理工作
         document.getElementById('btn-stop').classList.add('hidden');
         document.getElementById(isPro ? 'btn-gen-pro' : 'btn-gen-std').disabled = false;
         reportController = null;
@@ -112,7 +109,7 @@ async function startReport(isPro) {
 
 function stopGeneration() {
     if (reportController) {
-        reportController.abort(); // 触发中断
+        reportController.abort();
     }
 }
 
@@ -120,7 +117,19 @@ function handleReportEvent(event) {
     const { type, payload } = event;
     const contentEl = document.getElementById('reportContent');
 
-    // --- 处理 Pro 模式特有事件 ---
+    // ✅ 新增错误处理
+    if (type === 'error') {
+        console.error("Backend Error:", payload);
+        contentEl.innerHTML += `
+            <div class="mt-4 p-4 bg-red-900/30 border border-red-500 rounded-lg animate-pulse">
+                <h3 class="text-red-400 font-bold"><i class="fa-solid fa-bug"></i> 生成中断</h3>
+                <p class="text-xs text-red-200 mt-1 font-mono">${payload}</p>
+            </div>
+        `;
+        return;
+    }
+
+    // --- 处理 Pro 模式特有事件 (炫酷效果) ---
     if (isProMode) {
         const logEl = document.getElementById('thought-log');
         const evidenceEl = document.getElementById('evidence-list');
@@ -168,12 +177,15 @@ function handleReportEvent(event) {
     }
     else if (type === 'step_start') {
         contentEl.innerHTML += `<div class="mb-8"><h2 class="text-xl font-bold text-cyan-400 mb-4 border-b border-slate-700 pb-2">${payload.title}</h2><div id="curr-section" class="text-slate-300 leading-7"></div></div>`;
+        
+        // v3.0 的 Timeline 高亮效果
         const tlItem = document.getElementById(`tl-${payload.index}`);
         if (tlItem) { 
             tlItem.classList.remove('opacity-60', 'bg-slate-700/50', 'border-slate-600'); 
             tlItem.classList.add('bg-blue-600', 'border-blue-400', 'text-white', 'shadow-lg', 'scale-105'); 
             tlItem.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
         }
+        
         requestAnimationFrame(() => { 
             contentEl.scrollTop = contentEl.scrollHeight; 
         });
@@ -182,7 +194,6 @@ function handleReportEvent(event) {
         const currSection = document.getElementById('curr-section');
         if (currSection) {
             const raw = currSection.getAttribute('data-raw') || '';
-            // 🔥 这里也要注意，不要写成 raw += payload，因为 raw 是 const
             const newRaw = raw + payload;
             currSection.setAttribute('data-raw', newRaw);
             currSection.innerHTML = marked.parse(newRaw);

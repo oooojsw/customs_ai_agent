@@ -32,14 +32,14 @@ class PromptBuilder:
     def _load_rule_config(self):
         """加载 JSON 配置文件，带容错"""
         try:
-            print(f"📂 [PromptBuilder] 加载规则配置: {self.rule_path}")
+            print(f" [PromptBuilder] 加载规则配置: {self.rule_path}")
             with open(self.rule_path, 'r', encoding='utf-8') as f:
                 #加载文件规则文件内容，并赋值给实例变量config
                 self.config = json.load(f)
                 self.system_role = self.config.get('meta', {}).get('system_role_definition', self.system_role)
                 self.output_requirement = self.config.get('global_output_requirement', self.output_requirement)
         except Exception as e:
-            print(f"❌ [PromptBuilder] 规则加载失败: {e}")
+            print(f"[Error] [PromptBuilder] 规则加载失败: {e}")
             # 保持默认空配置，防止崩溃
 
     def _load_specific_rag_context(self, filename: str) -> str:
@@ -55,10 +55,10 @@ class PromptBuilder:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
         except FileNotFoundError:
-            print(f"⚠️ [PromptBuilder] 警告: 找不到 RAG 文件 -> {filename}")
+            print(f"[Warning] [PromptBuilder] 警告: 找不到 RAG 文件 -> {filename}")
             return "无（未找到对应的参考指导文件）"
         except Exception as e:
-            print(f"❌ [PromptBuilder] 读取 RAG 文件出错: {e}")
+            print(f"[Error] [PromptBuilder] 读取 RAG 文件出错: {e}")
             return "无（读取文件出错）"
 
     def build_system_prompt(self):

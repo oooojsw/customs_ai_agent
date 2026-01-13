@@ -31,3 +31,5 @@ aiosqlite>=0.20.0              # 异步 SQLite
 python-dotenv>=1.0.1           # 读取 .env 配置
 tiktoken>=0.7.0                # Token 计算
 pydantic>=2.8.0                # 数据校验
+pandas>=2.0.0                 # 【新增】Excel/CSV 处理
+openpyxl>=3.1.0               # 【新增】Excel 文件支持

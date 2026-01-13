@@ -20,7 +20,7 @@ class DataClient:
         # 2. 如果接口挂了或者没数据，为了演示效果，我们使用 Mock 数据兜底
         # (在真实生产环境可以去掉这个 Mock)
         if not data:
-            print(f"⚠️ [DataClient] 未能从平台获取数据，启用 Mock 模式演示: {entry_id}")
+            print(f"[Warning] [DataClient] 未能从平台获取数据，启用 Mock 模式演示: {entry_id}")
             data = self._get_mock_data(entry_id)
             if not data:
                 return None # 真的没救了
@@ -43,7 +43,7 @@ class DataClient:
                 return result if isinstance(result, dict) else None
             return None
         except Exception as e:
-            print(f"❌ [DataClient] 连接数据平台失败: {e}")
+            print(f"[Error] [DataClient] 连接数据平台失败: {e}")
             return None
 
     def _format_as_text(self, data: dict) -> str:

@@ -1,6 +1,7 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from src.database.models import Base
 import os
+from typing import AsyncGenerator
 
 # 1. 设置数据库文件的位置
 # 我们把它放在项目根目录下，叫 customs_audit.db
@@ -23,4 +24,19 @@ async def init_db():
     async with engine.begin() as conn:
         # 按照 models.py 里的定义，创建所有表
         await conn.run_sync(Base.metadata.create_all)
-    print("✅ 数据库表结构初始化完成")
+    print("[Database] Database tables initialized")
+
+
+# 5. 依赖注入函数：获取异步会话
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    FastAPI 依赖注入：用于在路由中获取数据库会话
+    用法：
+        async with get_async_session() as db:
+            # 数据库操作
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()

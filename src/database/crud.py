@@ -1,6 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.database.models import AuditTask, AuditDetail
+from sqlalchemy import select
+from src.database.models import AuditTask, AuditDetail, BatchTask, BatchItem
 from datetime import datetime
+import uuid
 
 class AuditRepository:
     """
@@ -49,3 +51,128 @@ class AuditRepository:
 
             # 4. 一次性提交所有更改
             await self.db.commit()
+
+
+class BatchRepository:
+    """
+    批量任务仓库类：处理批量任务的数据操作
+    """
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create_batch_task(self, total_count: int) -> str:
+        """
+        创建新的批量任务
+        返回：task_uuid（用于前端查询）
+        """
+        task_uuid = str(uuid.uuid4())
+        new_task = BatchTask(
+            task_uuid=task_uuid,
+            total_count=total_count,
+            status="pending"
+        )
+        self.db.add(new_task)
+        await self.db.commit()
+        await self.db.refresh(new_task)
+        return task_uuid
+
+    async def start_batch_task(self, task_uuid: str):
+        """标记批量任务开始处理"""
+        stmt = select(BatchTask).where(BatchTask.task_uuid == task_uuid)
+        result = await self.db.execute(stmt)
+        task = result.scalar_one_or_none()
+        if task:
+            task.status = "processing"
+            task.started_at = datetime.now()
+            await self.db.commit()
+
+    async def add_batch_items(self, task_uuid: str, items: list):
+        """批量添加明细记录"""
+        stmt = select(BatchTask).where(BatchTask.task_uuid == task_uuid)
+        result = await self.db.execute(stmt)
+        task = result.scalar_one_or_none()
+        if not task:
+            return
+
+        for item_data in items:
+            item = BatchItem(
+                batch_task_id=task.id,
+                row_index=item_data.get('row_index'),
+                data_type=item_data.get('data_type'),
+                content=item_data.get('content'),
+                status="pending"
+            )
+            self.db.add(item)
+        await self.db.commit()
+
+    async def update_item_status(self, task_uuid: str, row_index: int, status: str,
+                                 result_summary: str = None, detail_result: dict = None,
+                                 error_message: str = None):
+        """更新单条记录的处理状态"""
+        stmt = select(BatchItem).join(BatchTask).where(
+            BatchTask.task_uuid == task_uuid,
+            BatchItem.row_index == row_index
+        )
+        result = await self.db.execute(stmt)
+        item = result.scalar_one_or_none()
+        if item:
+            item.status = status
+            if result_summary:
+                item.result_summary = result_summary
+            if detail_result:
+                item.detail_result = detail_result
+            if error_message:
+                item.error_message = error_message
+
+            # 更新父任务的计数
+            task = await self.get_batch_task_by_uuid(task_uuid)
+            if task:
+                await self._update_task_counts(task)
+            await self.db.commit()
+
+    async def _update_task_counts(self, task: BatchTask):
+        """更新批量任务的统计数据"""
+        completed = len([i for i in task.items if i.status == "completed"])
+        failed = len([i for i in task.items if i.status == "failed"])
+        task.completed_count = completed
+        task.failed_count = failed
+
+        # 全部完成则更新任务状态
+        if completed + failed >= task.total_count:
+            task.status = "completed"
+            task.finished_at = datetime.now()
+
+    async def get_batch_task_by_uuid(self, task_uuid: str) -> BatchTask:
+        """根据 UUID 获取批量任务（包含所有明细）"""
+        stmt = select(BatchTask).where(BatchTask.task_uuid == task_uuid)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_batch_progress(self, task_uuid: str) -> dict:
+        """获取批量任务的进度信息"""
+        task = await self.get_batch_task_by_uuid(task_uuid)
+        if not task:
+            return None
+
+        items_data = []
+        for item in task.items:
+            items_data.append({
+                "row_index": item.row_index,
+                "data_type": item.data_type,
+                "status": item.status,
+                "result_summary": item.result_summary,
+                "error_message": item.error_message,
+                "detail_result": item.detail_result
+            })
+
+        return {
+            "task_uuid": task.task_uuid,
+            "status": task.status,
+            "total_count": task.total_count,
+            "completed_count": task.completed_count,
+            "failed_count": task.failed_count,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "started_at": task.started_at.isoformat() if task.started_at else None,
+            "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+            "items": items_data
+        }

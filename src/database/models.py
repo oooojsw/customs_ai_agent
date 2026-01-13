@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 # 1. 定义基类，所有模型都要继承它
@@ -40,3 +40,53 @@ class AuditDetail(Base):
     
     # 反向关联
     task = relationship("AuditTask", back_populates="details")
+
+# 4. 定义【批量任务主表】
+class BatchTask(Base):
+    __tablename__ = "batch_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_uuid = Column(String(50), unique=True, index=True, nullable=False)  # 前端查询用的 UUID
+
+    # 统计信息
+    total_count = Column(Integer, default=0)      # 总记录数
+    completed_count = Column(Integer, default=0)  # 已完成数
+    failed_count = Column(Integer, default=0)     # 失败数
+
+    # 状态: pending/processing/completed/failed
+    status = Column(String(20), default="pending")
+    error_message = Column(Text, nullable=True)   # 整体错误信息
+
+    created_at = Column(DateTime, default=datetime.now)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    # 关联的子表
+    items = relationship("BatchItem", back_populates="batch_task", cascade="all, delete-orphan")
+
+# 5. 定义【批量任务明细表】
+class BatchItem(Base):
+    __tablename__ = "batch_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 外键关联批量任务
+    batch_task_id = Column(Integer, ForeignKey("batch_tasks.id"))
+
+    # 原始数据
+    row_index = Column(Integer)                    # Excel 中的行号
+    data_type = Column(String(20))                 # text 或 image
+    content = Column(Text)                         # 文本内容或图片 URL
+
+    # 处理状态: pending/processing/completed/failed
+    status = Column(String(20), default="pending")
+
+    # 结果概要（用于快速显示）
+    result_summary = Column(String(50))            # pass 或 risk
+    error_message = Column(Text, nullable=True)    # 错误信息
+
+    # 详细结果（完整分析结果，JSON 格式）
+    detail_result = Column(JSON, nullable=True)
+
+    # 反向关联
+    batch_task = relationship("BatchTask", back_populates="items")
