@@ -14,7 +14,7 @@ async function sendMessage() {
 
     // AI thinking
     const thinkingId = 'thinking-' + Date.now();
-    history.innerHTML += `<div id="${thinkingId}" class="flex justify-start"><div class="chat-thinking"><i class="fa-solid fa-spinner fa-spin"></i> 思考中...</div></div>`;
+    history.innerHTML += `<div id="${thinkingId}" class="flex justify-start"><div class="chat-thinking"><i class="fa-solid fa-spinner fa-spin"></i> ${t('thinking')}</div></div>`;
     history.scrollTop = history.scrollHeight;
 
     // AI Answer container
@@ -27,7 +27,7 @@ async function sendMessage() {
     try {
         const res = await fetch(CHAT_URL, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ message: msg, session_id: SESSION_ID })
+            body: JSON.stringify({ message: msg, session_id: SESSION_ID, language: window.currentLanguage })
         });
 
         const reader = res.body.getReader();
@@ -61,6 +61,6 @@ async function sendMessage() {
             }
         }
     } catch(e) {
-        document.getElementById(thinkingId).innerHTML = "错误: " + e;
+        document.getElementById(thinkingId).innerHTML = `${t('error')}: ` + e;
     }
 }

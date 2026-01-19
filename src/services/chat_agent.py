@@ -114,20 +114,23 @@ class CustomsChatAgent:
                 self.retriever.invoke("warm-up") 
             except: pass
 
-    async def chat_stream(self, user_input: str, session_id: str = "default_session"):
+    async def chat_stream(self, user_input: str, session_id: str = "default_session", language: str = "zh"):
         """
         执行 Agent 流式调用
         """
         try:
             print(f"\n👉 [Request] {user_input}")
             yield f"data: {json.dumps({'type': 'thinking', 'content': '智能体正在思考...'}, ensure_ascii=False)}\n\n"
-            
+
             config = {"configurable": {"thread_id": session_id}}
             has_sent_content = False
 
-            # 【构建消息列表】手动将 SystemPrompt 插在最前面
+            # 【构建消息列表】手动将 SystemPrompt 插在最前面，并注入语言指令
+            language_instruction = self._get_language_instruction(language)
+            enhanced_system_prompt = f"{self.system_prompt_text}\n\n{language_instruction}"
+
             input_messages = [
-                SystemMessage(content=self.system_prompt_text),
+                SystemMessage(content=enhanced_system_prompt),
                 HumanMessage(content=user_input)
             ]
 
@@ -189,3 +192,18 @@ class CustomsChatAgent:
             traceback.print_exc()
             payload = {"type": "error", "content": f"系统错误: {str(e)}"}
             yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _get_language_instruction(self, language: str) -> str:
+        """
+        根据语言代码生成对应的输出指令
+        """
+        # 语言代码映射到实际语言名称
+        language_names = {
+            "zh": "简体中文 (Chinese)",
+            "vi": "Tiếng Việt (越南语)"
+        }
+        language_name = language_names.get(language, language_names["zh"])
+
+        return f"""【重要语言设置】当前用户设置的语言是 {language_name}，语言代码为 {language}。
+【严格要求】你必须使用 {language_name} 回答所有问题，所有输出必须是 {language_name}。
+这是用户界面语言设置，你的回答将直接显示给前端用户，请务必使用 {language_name}。"""

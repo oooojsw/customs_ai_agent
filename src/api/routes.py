@@ -30,13 +30,16 @@ router = APIRouter()
 # --- 请求体定义 ---
 class AnalysisRequest(BaseModel):
     raw_data: str
+    language: str = "zh"  # 新增：语言参数，默认中文
 
 class ChatRequest(BaseModel):
     message: str
     session_id: str = "default_session"
+    language: str = "zh"  # 新增：语言参数，默认中文
 
 class ReportRequest(BaseModel):
     raw_data: str
+    language: str = "zh"  # 新增：语言参数，默认中文
 
 # ==========================================
 # 1. 智能审单接口 (功能一)
@@ -45,10 +48,10 @@ class ReportRequest(BaseModel):
 async def analyze_customs_declaration(request: AnalysisRequest):
     if not request.raw_data or len(request.raw_data.strip()) < 5:
         raise HTTPException(status_code=400, detail="数据太短，无法分析")
-    
+
     orchestrator = RiskAnalysisOrchestrator()
     return StreamingResponse(
-        orchestrator.analyze_stream(request.raw_data),
+        orchestrator.analyze_stream(request.raw_data, language=request.language),
         media_type="text/event-stream"
     )
 
@@ -62,7 +65,7 @@ async def chat_with_agent(body: ChatRequest, request: Request):
         raise HTTPException(status_code=503, detail="对话引擎未就绪")
 
     return StreamingResponse(
-        agent.chat_stream(body.message, body.session_id),
+        agent.chat_stream(body.message, body.session_id, language=body.language),
         media_type="text/event-stream"
     )
 
@@ -75,9 +78,9 @@ async def generate_compliance_report(body: ReportRequest, req: Request):
         reporter = getattr(req.app.state, "reporter", None)
         if not reporter:
             reporter = ComplianceReporter() # 现场兜底初始化
-            
+
         return StreamingResponse(
-            reporter.generate_stream(body.raw_data),
+            reporter.generate_stream(body.raw_data, language=body.language),
             media_type="text/event-stream"
         )
     except Exception as e:
@@ -88,14 +91,17 @@ async def generate_compliance_report(body: ReportRequest, req: Request):
 # 4. 图片 OCR 识别
 # ==========================================
 @router.post("/analyze_image")
-async def analyze_declaration_image(file: UploadFile = File(...)):
+async def analyze_declaration_image(
+    file: UploadFile = File(...),
+    language: str = "zh"  # 新增：语言参数，默认中文
+):
     if not ImageTextExtractor:
         raise HTTPException(status_code=501, detail="OCR 模块缺失")
-        
+
     content = await file.read()
     extractor = ImageTextExtractor()
     try:
-        text, model = extractor.extract_text(content, file.content_type)
+        text, model = extractor.extract_text(content, file.content_type, language=language)
         return {"text": text, "model": model}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

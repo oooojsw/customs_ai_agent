@@ -59,12 +59,41 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 .doc-card {
     background: rgba(30, 41, 59, 0.6); border: 1px solid #334155;
     padding: 10px; margin-bottom: 8px; border-radius: 6px;
-    display: flex; align-items: center; gap: 10px;
-    font-size: 0.8rem; color: #94a3b8; 
+    display: flex; flex-direction: column; gap: 10px;
+    font-size: 0.8rem; color: #94a3b8;
     animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1);
     transition: all 0.2s;
 }
 .doc-card:hover { border-color: #60a5fa; background: rgba(59, 130, 246, 0.1); }
+.doc-card .rag-result-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+}
+.doc-card .rag-result-header:hover {
+    opacity: 0.9;
+}
+.doc-card .rag-result-header .chevron-icon {
+    transition: transform 0.3s ease;
+}
+.doc-card .rag-result-header .chevron-icon.expanded {
+    transform: rotate(90deg);
+}
+.doc-card .rag-content {
+    max-height: 300px;
+    overflow-y: auto;
+}
+.doc-card .rag-content::-webkit-scrollbar {
+    width: 4px;
+}
+.doc-card .rag-content::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.2);
+}
+.doc-card .rag-content::-webkit-scrollbar-thumb {
+    background: rgba(96, 165, 250, 0.5);
+    border-radius: 2px;
+}
 .note-card {
     background: rgba(251, 191, 36, 0.05); border-left: 3px solid #fbbf24;
     padding: 8px 12px; margin-bottom: 8px; border-radius: 2px;
@@ -74,6 +103,10 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 }
 @keyframes slide-in-right { from {opacity: 0; transform: translateX(20px);} to {opacity: 1; transform: translateX(0);} }
 @keyframes fade-in-up { from {opacity: 0; transform: translateY(10px);} to {opacity: 1; transform: translateY(0);} }
+
+/* 证据卡片展开/收起动画 */
+.chevron-icon { transition: transform 0.3s ease; }
+.chevron-icon.rotate-90 { transform: rotate(90deg); }
 
 /* 3. 终端日志 (Terminal) */
 .terminal-log {
@@ -110,15 +143,15 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
     display: flex;
     flex-direction: column;
     gap: 12px;
-    height: 100%;
+    min-height: 0;
     overflow: hidden;
     padding-bottom: 2px; /* 微调 */
 }
 
 /* 证据链：占比 60%，允许压缩 */
-#panel-brain > .evidence-container { 
+#panel-brain > .evidence-container {
     flex: 6 1 0%; /* flex-grow: 6, flex-shrink: 1 */
-    min-height: 200px; /* 最小高度 */
+    min-height: 0; /* 关键：允许收缩 */
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -132,9 +165,10 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 }
 
 /* 日志：占比 40%，强制最小高度 */
-#panel-brain > .terminal-container { 
+#panel-brain > .terminal-container {
     flex: 4 0 240px; /* flex-grow: 4, flex-shrink: 0 (不许压缩), basis: 240px */
-    min-height: 240px; /* 强制最小高度，防止被挤压 */
+    min-height: 0; /* 关键：允许收缩 */
+    max-height: 40%; /* 限制最大高度 */
     overflow: hidden;
     display: flex;
     flex-direction: column;

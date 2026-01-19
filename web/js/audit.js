@@ -21,39 +21,39 @@ function loadSample(key) {
 async function searchDeclaration() {
     const input = document.getElementById('searchInput');
     const id = input.value.trim();
-    if (!id) return alert("请输入单号");
-    
+    if (!id) return alert(t('please_input_id'));
+
     try {
         const res = await fetch(QUERY_URL + id);
         if (res.ok) {
             const json = await res.json();
             document.getElementById('rawDataInput').value = json.text;
         } else {
-            alert("未找到数据");
+            alert(t('no_data_found'));
         }
-    } catch(e) { alert("查询失败"); }
+    } catch(e) { alert(t('query_failed')); }
 }
 
 async function startAnalysis() {
     const raw = document.getElementById('rawDataInput').value;
-    if (!raw) return alert("请输入数据");
+    if (!raw) return alert(t('please_input_data'));
 
     const container = document.getElementById('stepsContainer');
     const final = document.getElementById('finalResult');
     const btn = document.getElementById('startBtn');
-    
+
     container.innerHTML = '';
     container.classList.remove('min-h-[400px]', 'justify-center', 'items-center');
     final.classList.add('hidden');
     btn.disabled = true;
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 研判中...';
+    btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${t('analyzing')}...`;
 
     try {
         const res = await fetch(ANALYZE_URL, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ raw_data: raw })
+            body: JSON.stringify({ raw_data: raw, language: window.currentLanguage })
         });
-        
+
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -73,10 +73,10 @@ async function startAnalysis() {
             }
         }
     } catch(e) {
-        alert("请求失败: " + e);
+        alert(`${t('request_failed')}: ` + e);
     } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-rocket"></i> 开始智能研判';
+        btn.innerHTML = `<i class="fa-solid fa-rocket"></i> ${t('start_analysis')}`;
     }
 }
 
@@ -87,28 +87,11 @@ function renderAuditStep(data, container, final) {
                 <div class="w-8 h-8 rounded bg-slate-700 flex items-center justify-center text-slate-400 mt-1"><i class="fa-solid fa-${s.icon}"></i></div>
                 <div class="flex-1">
                     <h3 class="font-bold text-slate-200 text-sm mb-1">${s.title}</h3>
-                    <p class="text-xs text-slate-500 msg">等待...</p>
-
-                    <!-- RAG 文件信息 -->
-                    ${s.rag_file ? `
-                    <div class="mt-2">
-                        <span class="rag-file-label text-xs text-blue-400 hover:text-blue-300 cursor-pointer flex items-center gap-1">
-                            <i class="fa-solid fa-file-lines"></i>
-                            查看参考文件: <span class="rag-filename">${s.rag_filename || '暂无'}</span>
-                            <i class="fa-solid fa-chevron-right chevron-icon text-xs transition-transform"></i>
-                        </span>
-                        <div class="rag-content hidden mt-2 p-3 bg-slate-900/50 rounded border border-slate-600 text-xs text-slate-300 overflow-y-auto max-h-60">
-                            <div class="loading-rag"><i class="fa-solid fa-spinner fa-spin"></i> 加载中...</div>
-                        </div>
-                    </div>
-                    ` : ''}
+                    <p class="text-xs text-slate-500 msg">${t('waiting')}</p>
                 </div>
                 <div class="status text-slate-600 mt-1"><i class="fa-regular fa-circle"></i></div>
             </div>
         `).join('');
-
-        // 绑定 RAG 文件点击事件
-        bindRagClickEvents();
     } else if (data.type === 'step_start') {
         const el = document.getElementById(`step-${data.rule_id}`);
         el.classList.remove('pending');
@@ -133,7 +116,7 @@ function renderAuditStep(data, container, final) {
         const bgColor = isPass ? 'bg-green-500/10' : 'bg-red-500/10';
         const titleColor = isPass ? 'text-green-400' : 'text-red-400';
         const iconClass = isPass ? 'fa-shield-check text-green-500' : 'fa-triangle-exclamation text-red-500';
-        const titleText = isPass ? '智能研判通过' : '发现潜在风险';
+        const titleText = isPass ? t('audit_pass') : t('audit_risk');
 
         // 2. 使用 innerHTML 渲染富文本结构（图标+大标题+详情框）
         final.className = ''; // 清空原有 class，完全由内部 div 控制
@@ -146,7 +129,7 @@ function renderAuditStep(data, container, final) {
                 
                 <div class="mt-4 text-slate-300 text-sm text-left bg-slate-900/60 p-4 rounded border border-slate-700/50 shadow-inner">
                     <div class="flex items-center gap-2 mb-2 text-xs text-slate-500 border-b border-slate-700 pb-1">
-                        <i class="fa-solid fa-clipboard-list"></i> 决策摘要
+                        <i class="fa-solid fa-clipboard-list"></i> ${t('decision_summary')}
                     </div>
                     <p class="whitespace-pre-line leading-relaxed font-mono text-xs">${data.summary}</p>
                 </div>
@@ -202,7 +185,7 @@ async function loadRagContent(ruleId, ragContentDiv) {
         const rule = config.rules.find(r => r.id === ruleId);
 
         if (!rule || !rule.rag_file) {
-            ragContentDiv.innerHTML = '<p class="text-red-400">未找到对应的 RAG 文件</p>';
+            ragContentDiv.innerHTML = `<p class="text-red-400">${t('no_rag_file')}</p>`;
             return;
         }
 
@@ -222,7 +205,7 @@ ${ragContent}
 
     } catch (error) {
         console.error('加载 RAG 文件失败:', error);
-        ragContentDiv.innerHTML = '<p class="text-red-400">加载文件失败</p>';
+        ragContentDiv.innerHTML = `<p class="text-red-400">${t('load_file_failed')}</p>`;
     }
 }
 
@@ -441,7 +424,7 @@ async function simulateRagLoad(filename) {
 
     // 模拟网络延迟
     await new Promise(resolve => setTimeout(resolve, 500));
-    return ragContents[filename] || '未找到对应文件内容';
+    return ragContents[filename] || t('no_file_content');
 }
 
 // --- 新增图片识别逻辑 ---
@@ -450,7 +433,7 @@ async function analyzeImage() {
     const btn = document.getElementById('imageAnalyzeBtn');
     const file = input.files && input.files[0];
 
-    if (!file) { alert("请先选择一张报关单图片！"); return; }
+    if (!file) { alert(t('select_image_first')); return; }
 
     // UI Loading
     const originalContent = btn.innerHTML;
@@ -460,6 +443,7 @@ async function analyzeImage() {
     try {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('language', window.currentLanguage);
 
         const response = await fetch(IMAGE_API_URL, {
             method: 'POST',
@@ -468,7 +452,7 @@ async function analyzeImage() {
 
         if (!response.ok) {
             const err = await response.json().catch(() => ({}));
-            throw new Error(err.detail || "识别服务异常");
+            throw new Error(err.detail || t('recognition_error'));
         }
 
         const resJson = await response.json();
@@ -486,7 +470,7 @@ async function analyzeImage() {
 
     } catch (e) {
         console.error(e);
-        alert("图片识别失败: " + e.message);
+        alert(`${t('image_recognition_failed')} ${e.message}`);
     } finally {
         btn.disabled = false;
         btn.innerHTML = originalContent;

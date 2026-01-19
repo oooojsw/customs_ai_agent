@@ -1,35 +1,145 @@
 # 忽略环境配置文件（包含敏感 Key，绝对不能上传！）
 .env
+.env.local
+.env.*.local
 
 # 忽略 Python 编译产生的垃圾文件
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # 忽略系统生成的文件
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
 
-# 忽略 VS Code 配置
+# 忽略 IDE 和编辑器配置
 .vscode/
-UsersZhuanZnpm-cache/
-CLAUDE.md
-.claude/agents/kfc/spec-design.md
-.claude/agents/kfc/spec-impl.md
-.claude/agents/kfc/spec-judge.md
-.claude/agents/kfc/spec-requirements.md
-.claude/agents/kfc/spec-system-prompt-loader.md
-.claude/agents/kfc/spec-tasks.md
-.claude/agents/kfc/spec-test.md
-.claude/settings/kfc-settings.json
-.claude/system-prompts/spec-workflow-starter.md
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# 忽略包管理文件
+.pip_cache/
+.cache/
+pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.tox/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+*.venv/
+
+# 忽略 Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# 忽略 PyTorch 模型文件（如果有）
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# 忽略日志文件
+*.log
+logs/
+
+# 忽略数据库文件
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+customs_audit.db
+
+# 忽略向量索引缓存（可重新生成）
+config/faiss_index_local/
+*.index
+*.faiss
+
+# 忽略临时文件
+*.tmp
+*.temp
+.tmp/
+temp/
+
+# 忽略测试覆盖率报告
+.coverage
+htmlcov/
+.pytest_cache/
+
+# 忽略项目特定的开发文档和进展报告
+进度报告/
+备忘录
+备忘录.txt
+*.md.bak
+
+# 忽略测试数据文件（如果不是必要的）
+test_batch.csv
+test_batch.xlsx
+
+# 忽略 AI 工具配置和缓存
+.claude/
+.roo/
+npm-cache/
+Users*npm-cache/
+
+# 忽略 Claude Code 临时文件
+tmpclaude*
+*-cwd
+
+# 忽略测试脚本（临时测试文件）
+test_*.py
+*_test.py
+*_fix.py
+
+# 忽略 Docker 相关文件（如果不需要版本控制）
 .dockerignore
 docker-compose.yml
 Dockerfile
-.claude/
-.roo/
-备忘录
-test_batch.csv
-test_batch.xlsx
-备忘录
-备忘录
-备忘录.txt
+docker/
+
+# 忽略特定文档文件
+CLAUDE.md
+# AGENTS.md  # 文档文件，建议加入版本控制
+AGENTS.md

@@ -178,7 +178,7 @@ class LLMService:
         response = self._azure_client.chat.completions.create(
             model=settings.AZURE_OAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
+            max_tokens=8192,
             temperature=0.1
         )
         return response.choices[0].message.content, "Azure"
@@ -190,7 +190,7 @@ class LLMService:
         response = self._deepseek_client.chat.completions.create(
             model=settings.DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
+            max_tokens=8192,
             temperature=0.1
         )
         return response.choices[0].message.content, "DeepSeek"

@@ -15,6 +15,12 @@
         "icon": "file-text",
         "color": "blue"
       },
+      "display_vi": {
+        "title": "Kiểm tra tính toàn vẹn của các yếu tố cơ bản",
+        "loading_text": "Đang tải Hướng dẫn quy cách cơ bản, kiểm tra tính toàn vẹn của khai báo...",
+        "icon": "file-text",
+        "color": "blue"
+      },
       "rag_file": "rag_r01_basic_info.txt",
       "instruction": "请结合提供的【海关高级审查指导文件】，重点检查报关数据中的高科技商品（如IC、机械）是否提供了具体的型号、零件编号、功能说明等关键要素。如果仅有模糊描述（如'配件'、'无型号'），请判定为风险。"
     },
@@ -24,6 +30,12 @@
       "display": {
         "title": "禁限与敏感货物筛查",
         "loading_text": "正在加载《禁限管制目录》，筛查敏感风险...",
+        "icon": "shield-alert",
+        "color": "red"
+      },
+      "display_vi": {
+        "title": "Sàng lọc hàng hóa cấm nhập/hạn chế và nhạy cảm",
+        "loading_text": "Đang tải Danh mục kiểm soát, sàng lọc rủi ro nhạy cảm...",
         "icon": "shield-alert",
         "color": "red"
       },
@@ -39,6 +51,12 @@
         "icon": "currency-yen",
         "color": "gold"
       },
+      "display_vi": {
+        "title": "Đánh giá tính logic của giá",
+        "loading_text": "Đang tải Hướng dẫn đánh giá rủi ro giá, phân tích logic thương mại...",
+        "icon": "currency-yen",
+        "color": "gold"
+      },
       "rag_file": "rag_r03_price_logic.txt",
       "instruction": "请结合提供的【海关高级审查指导文件】，运用你的商业常识分析'单价'和'总价'。判断是否存在明显的低报价格（低于市场均价30%）或高报价格风险。注意：如果是旧货或残次品，需检查备注说明是否合理。"
     },
@@ -51,6 +69,12 @@
         "icon": "barcode",
         "color": "purple"
       },
+      "display_vi": {
+        "title": "Phân tích tính nhất quán của phân loại",
+        "loading_text": "Đang tải Quy tắc phân loại HS, kiểm tra logic phân loại...",
+        "icon": "barcode",
+        "color": "purple"
+      },
       "rag_file": "rag_r04_hs_classification.txt",
       "instruction": "请结合提供的【海关高级审查指导文件】，分析'货物名称'、'实际用途'与申报的'HS编码'是否逻辑一致。重点识别是否存在将成品（高税率）伪报为零件（低税率）的'低归高走'风险。"
     },
@@ -60,6 +84,12 @@
       "display": {
         "title": "单证一致性交叉比对",
         "loading_text": "正在加载《单证审核规范》，进行交叉比对...",
+        "icon": "clipboard-check",
+        "color": "green"
+      },
+      "display_vi": {
+        "title": "Kiểm tra chéo tính nhất quán của chứng từ",
+        "loading_text": "Đang tải Quy chuẩn kiểm tra chứng từ, thực hiện kiểm tra chéo...",
         "icon": "clipboard-check",
         "color": "green"
       },
