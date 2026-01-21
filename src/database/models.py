@@ -131,3 +131,31 @@ class PDFDocument(Base):
             and self.processed_text
             and len(self.processed_text) > 100
         )
+
+# 7. 定义【用户LLM配置表】
+# 用户可自定义LLM配置，优先级高于.env配置
+class UserLLMConfig(Base):
+    __tablename__ = "user_llm_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 基础配置
+    provider = Column(String(50), nullable=False, default="deepseek")  # 服务商：deepseek/openai/qwen/azure/custom
+    is_enabled = Column(Boolean, default=False)  # 是否启用用户配置
+
+    # API 配置
+    api_key = Column(String(255), nullable=False)
+    base_url = Column(String(255), nullable=False)
+    model_name = Column(String(100), nullable=False)
+
+    # Azure 特有配置
+    api_version = Column(String(50), nullable=True)
+
+    # 模型参数
+    temperature = Column(Float, default=0.3)
+
+    # 元数据
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    last_tested_at = Column(DateTime, nullable=True)
+    test_status = Column(String(20), default="never")  # never/success/failed

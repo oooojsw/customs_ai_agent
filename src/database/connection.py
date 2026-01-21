@@ -2,11 +2,13 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from src.database.models import Base
 import os
 from typing import AsyncGenerator
+from pathlib import Path
 
 # 1. 设置数据库文件的位置
-# 我们把它放在项目根目录下，叫 customs_audit.db
-# sqlite+aiosqlite:// 表示我们要用异步的方式连接 SQLite
-DATABASE_URL = "sqlite+aiosqlite:///./customs_audit.db"
+# 使用与 base.py 相同的路径
+DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = f"sqlite+aiosqlite:///{DB_DIR}/customs_audit.db"
 
 # 2. 创建异步引擎 (Engine)
 # echo=True 表示会在控制台打印出它执行的 SQL 语句，方便你调试学习

@@ -34,17 +34,38 @@ except ImportError as e:
 MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
-    def __init__(self, kb=None):
+    def __init__(self, kb=None, llm_config: dict = None):
         """
         初始化海关咨询对话Agent
 
         Args:
             kb: 可选的KnowledgeBase实例。如果不提供，将创建新实例。
                推荐从main.py传入全局共享的实例，避免重复初始化。
+            llm_config: 可选的 LLM 配置字典 {
+                'api_key': str,
+                'base_url': str,
+                'model': str,
+                'temperature': float
+            }
         """
         print("[System] Initializing Agent (DeepSeek compatible)...")
 
-        # --- 1. 网络客户端配置 ---
+        # --- 1. 获取 LLM 配置 ---
+        if llm_config:
+            # 使用传入的配置
+            config = llm_config
+            print("[ChatAgent] 使用传入的 LLM 配置")
+        else:
+            # 使用默认 .env 配置
+            config = {
+                'api_key': settings.DEEPSEEK_API_KEY,
+                'base_url': settings.DEEPSEEK_BASE_URL,
+                'model': settings.DEEPSEEK_MODEL,
+                'temperature': 0.3,
+            }
+            print("[ChatAgent] 使用 .env 默认配置")
+
+        # --- 2. 网络客户端配置 ---
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
 
         # 创建客户端
@@ -54,12 +75,12 @@ class CustomsChatAgent:
         else:
             async_client = httpx.AsyncClient(verify=False, timeout=120.0)
 
-        # --- 2. 初始化 LLM (关键配置) ---
+        # --- 3. 初始化 LLM (关键配置) ---
         self.llm = ChatOpenAI(
-            model=settings.DEEPSEEK_MODEL,
-            api_key=settings.DEEPSEEK_API_KEY,
-            base_url=settings.DEEPSEEK_BASE_URL,
-            temperature=0.3,
+            model=config['model'],
+            api_key=config['api_key'],
+            base_url=config['base_url'],
+            temperature=config.get('temperature', 0.3),
             http_async_client=async_client,
             streaming=True,
             # 【核心修复】DeepSeek 绑定工具后必须禁用并行调用才能流式输出

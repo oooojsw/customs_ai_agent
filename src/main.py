@@ -28,6 +28,7 @@ from src.api.routes import router as api_router
 from src.services.chat_agent import CustomsChatAgent
 from src.services.report_agent import ComplianceReporter
 from src.database.base import init_database
+from src.config.loader import settings
 
 # --- 4. 生命周期管理 ---
 @asynccontextmanager
@@ -42,6 +43,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ [System] 数据库初始化失败: {e}")
 
+    # 加载用户 LLM 配置
+    llm_config = None
+    try:
+        from src.database.connection import AsyncSessionLocal
+        from src.config.llm_loader import llm_config_loader
+
+        async with AsyncSessionLocal() as db:
+            llm_config = await llm_config_loader.load_config(db)
+            print(f"✅ [System] LLM 配置加载完成 (来源: {llm_config['source']})")
+    except Exception as e:
+        print(f"⚠️ [System] LLM 配置加载失败: {e}, 使用 .env 默认配置")
+        # 使用 .env 配置
+        from src.config.loader import settings
+        llm_config = {
+            'api_key': settings.DEEPSEEK_API_KEY,
+            'base_url': settings.DEEPSEEK_BASE_URL,
+            'model': settings.DEEPSEEK_MODEL,
+            'temperature': 0.3,
+            'source': 'env'
+        }
+
     # 初始化全局KnowledgeBase（单例模式，所有Agent共享）
     try:
         from src.services.knowledge_base import KnowledgeBase
@@ -52,17 +74,17 @@ async def lifespan(app: FastAPI):
         print(f"❌ [System] 知识库初始化失败: {e}")
         app.state.kb = None
 
-    # 初始化功能二：对话 Agent（传入全局kb实例）
+    # 初始化功能二：对话 Agent（传入全局kb实例 + llm配置）
     try:
-        app.state.agent = CustomsChatAgent(kb=app.state.kb)  # ← 传入kb，避免重复创建
+        app.state.agent = CustomsChatAgent(kb=app.state.kb, llm_config=llm_config)
         print("✅ [System] 对话引擎（功能二）就绪")
     except Exception as e:
         print(f"❌ [System] 对话引擎初始化失败: {e}")
         app.state.agent = None
 
-    # 初始化功能三：报告 Agent（传入全局kb实例）
+    # 初始化功能三：报告 Agent（传入全局kb实例 + llm配置）
     try:
-        app.state.reporter = ComplianceReporter(kb=app.state.kb)  # ← 传入kb，避免重复创建
+        app.state.reporter = ComplianceReporter(kb=app.state.kb, llm_config=llm_config)
         print("✅ [System] 研判建议书引擎（功能三）就绪")
     except Exception as e:
         print(f"❌ [System] 报告引擎初始化失败: {e}")
@@ -109,5 +131,9 @@ else:
     print(f"❌ [Error] 找不到前端目录或 index.html")
 
 if __name__ == "__main__":
+    # 从环境变量或配置获取端口，默认8000
+    port = settings.PORT
+    host = settings.HOST
+
     # ⚠️ 关键：直接传入 app 对象而非字符串，禁用 reload 确保进程稳定
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=host, port=port)

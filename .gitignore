@@ -1,4 +1,5 @@
-# 忽略环境配置文件（包含敏感 Key，绝对不能上传！）
+# 忽略环境配置文件（包含敏感 API Key，绝对不能上传！）
+# 包含：DeepSeek、OpenAI、Google Gemini 等厂商的 API Key
 .env
 .env.local
 .env.*.local
@@ -83,7 +84,8 @@ venv.bak/
 *.log
 logs/
 
-# 忽略数据库文件
+# 忽略数据库文件（包含用户配置等敏感信息）
+# user_llm_config 表存储了各个厂商的 API Key
 *.db
 *.sqlite
 *.sqlite3
@@ -91,6 +93,7 @@ logs/
 *.db-shm
 *.db-wal
 customs_audit.db
+data/*.db
 
 # 忽略向量索引缓存（可重新生成）
 # ⚠️ 重要：这些文件已经被Git移除跟踪，不要再提交！
@@ -114,9 +117,10 @@ htmlcov/
 .pytest_cache/
 
 # 忽略项目特定的开发文档和进展报告
-进度报告/
-测试文件_无用文件/
-备忘录
+进度记录/                    # 项目进度记录（可能包含敏感实现细节）
+测试文件_无用文件/          # 临时测试文件
+各厂商api格式说明/          # 各厂商API文档（可能包含敏感信息）
+备忘录                       # 开发备忘录
 备忘录.txt
 *.md.bak
 
@@ -125,10 +129,11 @@ test_batch.csv
 test_batch.xlsx
 
 # 忽略 AI 工具配置和缓存
-.claude/
-.roo/
-npm-cache/
-Users*npm-cache/
+.claude/           # Claude Code 工作目录，包含 test_records.md（可能包含敏感测试数据）
+.roo/              # Roo Code 工具配置
+npm-cache/         # npm 缓存
+Users*npm-cache/   # Windows 用户 npm 缓存
+UsersZhuanZnpm-cache/  # Windows 用户 npm 缓存（具体路径）
 
 # 忽略 Claude Code 临时文件
 tmpclaude*
@@ -149,3 +154,6 @@ docker/
 CLAUDE.md
 # AGENTS.md  # 文档文件，建议加入版本控制
 AGENTS.md
+nul
+索引忽略指引.txt
+重建索引日志.txt

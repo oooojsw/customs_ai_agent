@@ -89,6 +89,101 @@
                         <span id="indexCompleteMessage"></span>
                     </div>
                 </div>
+
+                <!-- LLM 配置区域 -->
+                <div class="border-t border-slate-700 pt-4 mt-4">
+                    <label class="text-slate-400 text-sm block mb-2" data-i18n="llm_config_title">LLM 模型配置</label>
+
+                    <!-- 启用开关 -->
+                    <div class="flex items-center justify-between mb-3">
+                        <span class="text-xs text-slate-300" data-i18n="use_custom_config">使用自定义配置</span>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="llmEnabled" class="sr-only peer" onchange="toggleLLMFields()">
+                            <div class="w-9 h-5 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+                        </label>
+                    </div>
+
+                    <!-- LLM 配置表单 -->
+                    <div id="llmConfigForm" class="hidden space-y-3">
+                        <!-- 提供商选择 -->
+                        <div>
+                            <label class="text-slate-400 text-xs block mb-1" data-i18n="provider">服务商</label>
+                            <select id="llmProvider" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none" onchange="updateProviderPresets()">
+                                <option value="deepseek">DeepSeek（推荐）</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="qwen">通义千问</option>
+                                <option value="zhipu">智谱 GLM</option>
+                                <option value="siliconflow">硅基流动</option>
+                                <option value="azure">Azure OpenAI</option>
+                                <option value="custom">自定义</option>
+                            </select>
+                        </div>
+
+                        <!-- Base URL -->
+                        <div>
+                            <label class="text-slate-400 text-xs block mb-1" data-i18n="base_url">API 地址</label>
+                            <input type="text" id="llmBaseUrl" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none" placeholder="https://api.deepseek.com">
+                        </div>
+
+                        <!-- API Key -->
+                        <div>
+                            <label class="text-slate-400 text-xs block mb-1">API Key</label>
+                            <input type="password" id="llmApiKey" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none" placeholder="sk-..." onblur="onApiKeyChanged()">
+                        </div>
+
+                        <!-- Model Name -->
+                        <div>
+                            <label class="text-slate-400 text-xs block mb-1 flex justify-between">
+                                <span data-i18n="model_name">模型名称</span>
+                                <div class="flex gap-2">
+                                    <button onclick="fetchModels()" id="fetchModelsBtn" class="text-cyan-400 hover:text-cyan-300" title="刷新模型列表">
+                                        <i class="fa-solid fa-sync-alt"></i>
+                                    </button>
+                                    <button onclick="toggleManualInput()" class="text-slate-400 hover:text-slate-300 text-xs" title="手动输入">
+                                        <i class="fa-solid fa-edit"></i>
+                                    </button>
+                                </div>
+                            </label>
+                            <select id="llmModelName" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="">请先选择服务商</option>
+                            </select>
+                            <input type="text" id="llmModelNameInput" class="hidden w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none mt-1" placeholder="或手动输入模型名称">
+                        </div>
+
+                        <!-- Azure API Version（仅Azure显示） -->
+                        <div id="azureApiVersionGroup" class="hidden">
+                            <label class="text-slate-400 text-xs block mb-1">API Version</label>
+                            <input type="text" id="llmApiVersion" class="w-full bg-slate-900 border border-slate-600 rounded p-2 text-xs text-white focus:border-cyan-500 focus:outline-none" placeholder="2024-03-01-preview" value="2024-03-01-preview">
+                            <p class="text-slate-500 text-xs mt-1">Azure OpenAI需要指定API版本</p>
+                        </div>
+
+                        <!-- Temperature -->
+                        <div>
+                            <label class="text-slate-400 text-xs block mb-1">Temperature: <span id="tempValue">0.3</span></label>
+                            <input type="range" id="llmTemperature" min="0" max="1" step="0.1" value="0.3" class="w-full" oninput="document.getElementById('tempValue').innerText = this.value">
+                        </div>
+
+                        <!-- 按钮组 -->
+                        <div class="flex gap-2 pt-2">
+                            <button onclick="testLLMConnection()" class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-cyan-400 rounded text-xs font-bold border border-slate-600 transition">
+                                <i class="fa-solid fa-plug"></i> <span data-i18n="test_connection">测试连接</span>
+                            </button>
+                            <button onclick="saveLLMConfig()" class="flex-1 py-2 bg-green-600 hover:bg-green-500 text-white rounded text-xs font-bold transition">
+                                <i class="fa-solid fa-save"></i> <span data-i18n="save_and_reload">保存并应用</span>
+                            </button>
+                        </div>
+
+                        <!-- 重置按钮 -->
+                        <button onclick="resetLLMConfig()" class="w-full py-2 bg-red-900/30 hover:bg-red-900/50 text-red-300 rounded text-xs border border-red-800 transition">
+                            <i class="fa-solid fa-rotate-left mr-1"></i> <span data-i18n="reset_to_env">重置为 .env</span>
+                        </button>
+
+                        <!-- 状态显示 -->
+                        <div id="llmStatusArea" class="hidden mt-2 p-2 bg-slate-900/50 rounded text-xs">
+                            <div id="llmStatusMessage"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -340,5 +435,6 @@
     <script src="js/chat.js?v=3.0.3"></script>
     <script src="js/report.js?v=3.0.3"></script>
     <script src="js/index_manager.js?v=3.0.3"></script>
+    <script src="js/llm_config.js?v=3.0.3"></script>
 </body>
 </html>

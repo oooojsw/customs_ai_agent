@@ -507,3 +507,403 @@ async def cancel_index_rebuild(request: Request):
         "status": "success",
         "message": "取消请求已发送"
     }
+
+# ==========================================
+# 9. LLM 配置管理接口
+# ==========================================
+
+class LLMConfigRequest(BaseModel):
+    provider: str
+    api_key: str
+    base_url: str
+    model_name: str
+    api_version: Optional[str] = None
+    temperature: Optional[float] = 0.3
+
+
+class LLMConfigResponse(BaseModel):
+    is_enabled: bool
+    provider: str
+    base_url: str
+    model_name: str
+    temperature: float
+    test_status: str
+    last_tested_at: Optional[str]
+
+
+@router.get("/config/llm")
+async def get_llm_config():
+    """获取当前 LLM 配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        config = await repo.get_active_config()
+
+        if not config:
+            from src.config.loader import settings
+            return LLMConfigResponse(
+                is_enabled=False,
+                provider="deepseek",
+                base_url=settings.DEEPSEEK_BASE_URL,
+                model_name=settings.DEEPSEEK_MODEL,
+                temperature=0.3,
+                test_status="never",
+                last_tested_at=None
+            )
+
+        return LLMConfigResponse(
+            is_enabled=config.is_enabled,
+            provider=config.provider,
+            base_url=config.base_url,
+            model_name=config.model_name,
+            temperature=config.temperature,
+            test_status=config.test_status,
+            last_tested_at=config.last_tested_at.isoformat() if config.last_tested_at else None
+        )
+
+
+@router.post("/config/llm")
+async def save_llm_config(config: LLMConfigRequest):
+    """保存 LLM 配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        saved_config = await repo.save_config(config.dict())
+
+        return {
+            "status": "success",
+            "message": "配置已保存",
+            "config_id": saved_config.id
+        }
+
+
+@router.post("/config/llm/test")
+async def test_llm_connection(config: LLMConfigRequest):
+    """测试 LLM 连接"""
+    try:
+        import httpx
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage
+
+        async_client = httpx.AsyncClient(verify=False, timeout=30.0)
+        test_llm = ChatOpenAI(
+            model=config.model_name,
+            api_key=config.api_key,
+            base_url=config.base_url,
+            temperature=0.1,
+            http_async_client=async_client,
+            max_tokens=10,
+        )
+
+        response = await test_llm.ainvoke([HumanMessage(content="Hi")])
+        await async_client.aclose()
+
+        if response.content:
+            return {
+                "status": "success",
+                "message": "连接成功",
+                "response_preview": str(response.content[:50])
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "无响应内容"
+            }
+
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"连接失败: {str(e)}"
+        }
+
+
+@router.post("/config/llm/reload")
+async def reload_llm_config(request: Request):
+    """
+    热重载 LLM 配置（无需重启服务）
+
+    重新初始化所有 Agent，使新配置立即生效
+    """
+    try:
+        from src.database.connection import AsyncSessionLocal
+        from src.config.llm_loader import llm_config_loader
+        from src.services.chat_agent import CustomsChatAgent
+        from src.services.report_agent import ComplianceReporter
+
+        # 加载新配置
+        async with AsyncSessionLocal() as db:
+            llm_config = await llm_config_loader.load_config(db)
+
+        # 重新初始化 Agent
+        kb = request.app.state.kb
+        request.app.state.agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
+        request.app.state.reporter = ComplianceReporter(kb=kb, llm_config=llm_config)
+
+        return {
+            "status": "success",
+            "message": "配置已重新加载",
+            "config": {
+                "provider": llm_config.get('source', 'unknown'),
+                "model": llm_config['model'],
+                "base_url": llm_config['base_url']
+            }
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"重载失败: {str(e)}",
+            "detail": traceback.format_exc()[:500]
+        }
+
+
+@router.post("/config/llm/reset")
+async def reset_llm_config():
+    """重置为 .env 默认配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        await repo.reset_to_env()
+
+        return {
+            "status": "success",
+            "message": "已重置为 .env 默认配置"
+        }
+
+
+@router.get("/config/llm/all")
+async def get_all_llm_configs():
+    """获取所有已保存的厂商配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        configs = await repo.get_all_configs()
+
+        # 返回配置列表（隐藏API Key）
+        result = []
+        for config in configs:
+            result.append({
+                "provider": config.provider,
+                "is_enabled": config.is_enabled,
+                "base_url": config.base_url,
+                "model_name": config.model_name,
+                "temperature": config.temperature,
+                "test_status": config.test_status,
+                "api_key_preview": config.api_key[:8] + "..." if config.api_key else "",
+                "has_api_key": bool(config.api_key)
+            })
+
+        return {
+            "status": "success",
+            "configs": result
+        }
+
+
+@router.get("/config/llm/provider/{provider}")
+async def get_provider_config(provider: str):
+    """获取指定厂商的配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        config = await repo.get_config_by_provider(provider)
+
+        if not config:
+            return {
+                "status": "not_found",
+                "message": f"未找到 {provider} 的配置"
+            }
+
+        return {
+            "status": "success",
+            "config": {
+                "provider": config.provider,
+                "is_enabled": config.is_enabled,
+                "base_url": config.base_url,
+                "model_name": config.model_name,
+                "temperature": config.temperature,
+                "api_version": config.api_version,
+                "test_status": config.test_status,
+                # 返回完整API Key用于前端填充
+                "api_key": config.api_key
+            }
+        }
+
+
+@router.post("/config/llm/activate/{provider}")
+async def activate_provider_config(provider: str):
+    """激活指定厂商的配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.crud import LLMConfigRepository
+        repo = LLMConfigRepository(db)
+        config = await repo.activate_provider(provider)
+
+        if not config:
+            raise HTTPException(status_code=404, detail=f"未找到 {provider} 的配置")
+
+        # 热重载配置
+        from src.config.llm_loader import llm_config_loader
+        llm_config = await llm_config_loader.load_config(db)
+
+        return {
+            "status": "success",
+            "message": f"已切换到 {provider}",
+            "config": {
+                "provider": provider,
+                "model": llm_config['model'],
+                "base_url": llm_config['base_url']
+            }
+        }
+
+
+@router.get("/config/llm/models")
+async def get_available_models(
+    provider: str,
+    api_key: str,
+    base_url: str = None,
+    api_version: str = None
+):
+    """
+    获取指定厂商的模型列表
+
+    参数：
+    - provider: 厂商名称 (deepseek, openai, qwen, zhipu, siliconflow, azure, custom)
+    - api_key: API密钥
+    - base_url: 自定义base_url（用于azure和custom provider）
+    - api_version: API版本（Azure特有，如：2024-03-01-preview）
+    """
+    try:
+        import httpx
+
+        # 1. 智谱GLM：无模型列表API，返回硬编码列表
+        if provider == "zhipu":
+            models = [
+                "glm-4.7",
+                "glm-4-turbo",
+                "glm-4-plus",
+                "glm-4-air",
+                "glm-4-flash"
+            ]
+            return {
+                "status": "success",
+                "models": models,
+                "source": "hardcoded"
+            }
+
+        # 2. Azure OpenAI：特殊处理（api-key header + api-version参数）
+        if provider == "azure":
+            if not base_url:
+                return {
+                    "status": "error",
+                    "message": "Azure需要提供Endpoint（如：https://your-resource.openai.azure.com）"
+                }
+            if not api_version:
+                api_version = "2024-03-01-preview"  # 默认版本
+
+            url = f"{base_url.rstrip('/')}/openai/models?api-version={api_version}"
+            headers = {"api-key": api_key}  # Azure使用api-key header
+
+            async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+
+                if response.status_code == 200:
+                    data = response.json()
+                    models = [item["id"] for item in data.get("data", [])]
+                    return {
+                        "status": "success",
+                        "models": models,
+                        "source": "api"
+                    }
+                elif response.status_code == 401:
+                    return {"status": "error", "message": "API Key 无效"}
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"API调用失败 (HTTP {response.status_code})"
+                    }
+
+        # 3. 其他厂商：使用标准OpenAI兼容格式
+        provider_urls = {
+            "deepseek": "https://api.deepseek.com/models",
+            "openai": "https://api.openai.com/v1/models",
+            "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+            "siliconflow": "https://api.siliconflow.cn/v1/models",
+            "custom": base_url  # 自定义服务商
+        }
+
+        if provider not in provider_urls:
+            return {
+                "status": "error",
+                "message": f"不支持的服务商: {provider}"
+            }
+
+        url = provider_urls[provider]
+        if not url:
+            return {
+                "status": "error",
+                "message": "自定义服务商需要提供base_url"
+            }
+
+        # 4. 标准OpenAI格式调用（Authorization: Bearer）
+        async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                # OpenAI兼容格式：data[].id
+                models = [item["id"] for item in data.get("data", [])]
+
+                return {
+                    "status": "success",
+                    "models": models,
+                    "source": "api"
+                }
+            elif response.status_code == 401:
+                return {
+                    "status": "error",
+                    "message": "API Key 无效或已过期"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "message": f"API调用失败 (HTTP {response.status_code})"
+                }
+
+    except httpx.TimeoutException:
+        return {
+            "status": "error",
+            "message": "请求超时，请检查网络连接"
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"获取模型列表失败: {str(e)}"
+        }

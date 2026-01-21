@@ -111,6 +111,20 @@ const translations = {
         index_error: '索引重建失败',
         total_files: '文件总数',
         total_chunks: '片段总数',
+
+        // LLM 配置
+        llm_config_title: 'LLM 模型配置',
+        use_custom_config: '使用自定义配置',
+        provider: '服务商',
+        base_url: 'API 地址',
+        model_name: '模型名称',
+        test_connection: '测试连接',
+        save_and_reload: '保存并应用',
+        reset_to_env: '重置为 .env',
+        config_saved: '配置已保存',
+        config_applied: '配置已应用',
+        test_success: '测试成功',
+        test_failed: '测试失败',
     },
 
     vi: {
@@ -224,6 +238,20 @@ const translations = {
         index_error: 'Xây dựng chỉ mục thất bại',
         total_files: 'Tổng số tệp',
         total_chunks: 'Tổng số đoạn',
+
+        // LLM 配置
+        llm_config_title: 'Cấu hình LLM',
+        use_custom_config: 'Sử dụng cấu hình tùy chỉnh',
+        provider: 'Nhà cung cấp',
+        base_url: 'Địa chỉ API',
+        model_name: 'Tên mô hình',
+        test_connection: 'Kiểm tra kết nối',
+        save_and_reload: 'Lưu và áp dụng',
+        reset_to_env: 'Đặt lại về .env',
+        config_saved: 'Đã lưu cấu hình',
+        config_applied: 'Đã áp dụng cấu hình',
+        test_success: 'Kiểm tra thành công',
+        test_failed: 'Kiểm tra thất bại',
     }
 };
 

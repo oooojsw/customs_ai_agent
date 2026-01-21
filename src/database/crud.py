@@ -1,7 +1,8 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from src.database.models import AuditTask, AuditDetail, BatchTask, BatchItem
+from src.database.models import AuditTask, AuditDetail, BatchTask, BatchItem, UserLLMConfig
 from datetime import datetime
+from typing import Optional
 import uuid
 
 class AuditRepository:
@@ -176,3 +177,99 @@ class BatchRepository:
             "finished_at": task.finished_at.isoformat() if task.finished_at else None,
             "items": items_data
         }
+
+
+class LLMConfigRepository:
+    """用户 LLM 配置仓库（支持多厂商配置）"""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_active_config(self) -> Optional[UserLLMConfig]:
+        """获取当前启用的配置"""
+        stmt = select(UserLLMConfig).where(
+            UserLLMConfig.is_enabled == True
+        ).order_by(UserLLMConfig.updated_at.desc()).limit(1)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_config_by_provider(self, provider: str) -> Optional[UserLLMConfig]:
+        """获取指定厂商的配置"""
+        stmt = select(UserLLMConfig).where(
+            UserLLMConfig.provider == provider
+        ).order_by(UserLLMConfig.updated_at.desc()).limit(1)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_all_configs(self) -> list:
+        """获取所有厂商的配置"""
+        stmt = select(UserLLMConfig).order_by(UserLLMConfig.provider)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def save_config(self, config_data: dict) -> UserLLMConfig:
+        """保存或更新指定厂商的配置（不影响其他厂商配置）"""
+        provider = config_data['provider']
+
+        # 查找是否已有该provider的配置
+        existing = await self.get_config_by_provider(provider)
+
+        if existing:
+            # 更新现有配置
+            existing.api_key = config_data['api_key']
+            existing.base_url = config_data['base_url']
+            existing.model_name = config_data['model_name']
+            existing.api_version = config_data.get('api_version')
+            existing.temperature = config_data.get('temperature', 0.3)
+            existing.test_status = 'never'
+            existing.is_enabled = True  # 保存时启用该配置
+            await self.db.commit()
+            await self.db.refresh(existing)
+            return existing
+        else:
+            # 创建新配置（先禁用其他配置，保持只有一个启用）
+            await self.disable_all_configs()
+
+            new_config = UserLLMConfig(
+                provider=provider,
+                is_enabled=True,
+                api_key=config_data['api_key'],
+                base_url=config_data['base_url'],
+                model_name=config_data['model_name'],
+                api_version=config_data.get('api_version'),
+                temperature=config_data.get('temperature', 0.3),
+                test_status='never'
+            )
+            self.db.add(new_config)
+            await self.db.commit()
+            await self.db.refresh(new_config)
+            return new_config
+
+    async def activate_provider(self, provider: str) -> Optional[UserLLMConfig]:
+        """启用指定厂商的配置（禁用其他所有配置）"""
+        # 检查该厂商是否有配置
+        config = await self.get_config_by_provider(provider)
+        if not config:
+            return None
+
+        # 禁用所有配置
+        await self.disable_all_configs()
+
+        # 启用指定配置
+        config.is_enabled = True
+        await self.db.commit()
+        await self.db.refresh(config)
+        return config
+
+    async def disable_all_configs(self):
+        """禁用所有配置"""
+        stmt = select(UserLLMConfig).where(UserLLMConfig.is_enabled == True)
+        result = await self.db.execute(stmt)
+        configs = result.scalars().all()
+        for config in configs:
+            config.is_enabled = False
+        await self.db.commit()
+
+    async def reset_to_env(self):
+        """重置为 .env 配置（禁用所有用户配置）"""
+        await self.disable_all_configs()
