@@ -93,9 +93,14 @@ logs/
 customs_audit.db
 
 # 忽略向量索引缓存（可重新生成）
+# ⚠️ 重要：这些文件已经被Git移除跟踪，不要再提交！
+# 原因：索引文件很大（50MB+），且不同环境需要重新生成
+# 重建方法：python quick_rebuild.py
+# 详细说明：参见 索引忽略指引.txt
 config/faiss_index_local/
 *.index
 *.faiss
+*.pkl
 
 # 忽略临时文件
 *.tmp
