@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "rules": {
+    "CUSTOMS": {
+      "min_rounds": 1,
+      "max_rounds": 4,
+      "early_stop_threshold": 0.75,
+      "force_continue_threshold": 0.4
+    },
+    "RESEARCH": {
+      "min_rounds": 2,
+      "max_rounds": 5,
+      "early_stop_threshold": 0.7,
+      "force_continue_threshold": 0.45
+    }
+  },
+  "quality_metrics": {
+    "score_weight": 0.4,
+    "content_weight": 0.3,
+    "dedup_weight": 0.2,
+    "evidence_weight": 0.1,
+    "min_content_length": 50,
+    "dedup_threshold": 0.85
+  }
+}

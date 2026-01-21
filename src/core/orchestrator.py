@@ -18,15 +18,18 @@ class RiskAnalysisOrchestrator:
         # 过滤掉 enabled: false 的规则
         self.active_rules = [r for r in self.prompt_builder.config['rules'] if r.get('enabled', True)]
 
-    async def analyze_stream(self, raw_data_context: str) -> AsyncGenerator[str, None]:
+    async def analyze_stream(self, raw_data_context: str, language: str = "zh") -> AsyncGenerator[str, None]:
         """
         核心流式分析函数。
         这是一个异步生成器 (Async Generator)，专门配合 FastAPI 的 StreamingResponse 使用。
-        
+
         Yields:
             str: 符合 SSE (Server-Sent Events) 格式的字符串
             格式示例: "data: {...json...}\n\n"
         """
+
+        # 根据 language 选择 display 字段
+        display_key = 'display_vi' if language == 'vi' else 'display'
         
         # --- 阶段 1: 初始化握手 ---
         # 告诉前端：我们要开始干活了，一共有多少步。
@@ -38,8 +41,8 @@ class RiskAnalysisOrchestrator:
             "steps_info": [
                 {
                     "id": rule['id'],
-                    "title": rule['display']['title'],
-                    "icon": rule['display']['icon'],
+                    "title": rule[display_key]['title'],
+                    "icon": rule[display_key]['icon'],
                     "rag_file": rule.get('rag_file', ''),
                     "rag_filename": rule.get('rag_file', '').replace('rag_', '').replace('.txt', '')
                 } for rule in self.active_rules
@@ -57,14 +60,14 @@ class RiskAnalysisOrchestrator:
         # --- 阶段 2: 逐条规则执行循环 ---
         for index, rule in enumerate(self.active_rules):
             rule_id = rule['id']
-            rule_name = rule['display']['title']
-            
+            rule_name = rule[display_key]['title']
+
             # 2.1 [状态推送] 开始处理当前步骤
             # 前端收到这个，对应的步骤条开始转圈圈 (Loading)
             yield self._format_sse({
                 "type": "step_start",
                 "rule_id": rule_id,
-                "loading_text": rule['display']['loading_text']
+                "loading_text": rule[display_key]['loading_text']
             })
             
             # --- 模拟 AI 思考的“呼吸感” ---
@@ -75,8 +78,8 @@ class RiskAnalysisOrchestrator:
             # 2.2 [核心逻辑] 构建 Prompt + 调用 LLM
             # 这里最好用 await 异步调用，防止阻塞主线程
             # (注：requests 是同步的，如果并发高需换 httpx，但演示够用了，这里用 asyncio.to_thread 包装一下)
-            system_prompt = self.prompt_builder.build_system_prompt()
-            user_prompt = self.prompt_builder.build_user_prompt(raw_data_context, rule)
+            system_prompt = self.prompt_builder.build_system_prompt(language=language)
+            user_prompt = self.prompt_builder.build_user_prompt(raw_data_context, rule, language=language)
             
             # 在线程池中执行同步的 LLM 调用，不阻塞 Event Loop
             llm_result = await asyncio.to_thread(
