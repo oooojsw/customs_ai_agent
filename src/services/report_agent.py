@@ -86,9 +86,16 @@ class QualityMetrics:
 
 
 class ComplianceReporter:
-    def __init__(self):
+    def __init__(self, kb=None):
+        """
+        初始化合规报告Agent
+
+        Args:
+            kb: 可选的KnowledgeBase实例。如果不提供，将创建新实例。
+               推荐从main.py传入全局共享的实例，避免重复初始化。
+        """
         print("📑 [System] 初始化 ComplianceReporter...")
-        
+
         # 1. 网络层配置
         proxy_url = settings.HTTP_PROXY
         # 强制关闭 SSL 验证
@@ -109,13 +116,23 @@ class ComplianceReporter:
             model_kwargs={"stream": True}
         )
 
-        # 3. 知识库检索器
-        self.kb = None
-        if KB_AVAILABLE:
+        # 3. 知识库检索器（使用传入的kb或创建新实例）
+        if kb is not None:
+            # ✅ 使用传入的全局kb实例（推荐方式）
+            self.kb = kb
+            print("   [OK] 使用全局共享的KnowledgeBase实例")
+        elif KB_AVAILABLE:
             try:
+                # ⚠️ 回退方案：创建新的kb实例（可能触发索引重建）
+                print("   [WARNING] 未传入kb参数，将创建新的KnowledgeBase实例")
+                print("   [TIP] 建议从main.py传入全局kb实例以避免重复初始化")
                 self.kb = KnowledgeBase()
             except Exception as e:
                 print(f"   ❌ 知识库加载失败 (跳过): {e}")
+                self.kb = None
+        else:
+            self.kb = None
+            print("   [INFO] KnowledgeBase未安装，将以无知识库模式运行")
 
         # 4. 加载双模 SOP
         self.sop_customs = self._load_specific_sop("sop_process.txt", "标准海关合规审查SOP")

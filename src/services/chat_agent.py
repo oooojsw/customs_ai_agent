@@ -34,12 +34,19 @@ except ImportError as e:
 MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
-    def __init__(self):
+    def __init__(self, kb=None):
+        """
+        初始化海关咨询对话Agent
+
+        Args:
+            kb: 可选的KnowledgeBase实例。如果不提供，将创建新实例。
+               推荐从main.py传入全局共享的实例，避免重复初始化。
+        """
         print("[System] Initializing Agent (DeepSeek compatible)...")
-        
+
         # --- 1. 网络客户端配置 ---
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
-        
+
         # 创建客户端
         if proxy_url:
             async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
@@ -58,7 +65,7 @@ class CustomsChatAgent:
             # 【核心修复】DeepSeek 绑定工具后必须禁用并行调用才能流式输出
             model_kwargs={
                 "stream": True,
-                "parallel_tool_calls": False, 
+                "parallel_tool_calls": False,
                 "stream_options": {"include_usage": False}
             }
         )
@@ -68,9 +75,18 @@ class CustomsChatAgent:
         self.retriever = None
         if KnowledgeBase:
             try:
-                self.kb = KnowledgeBase()
+                # 优先使用传入的kb实例
+                if kb is not None:
+                    self.kb = kb
+                    print("[ChatAgent] [OK] 使用全局共享的KnowledgeBase实例")
+                else:
+                    # 回退方案：创建新实例（可能触发重建）
+                    print("[ChatAgent] [WARNING] 未传入kb参数，将创建新的KnowledgeBase实例")
+                    print("[ChatAgent] [TIP] 建议从main.py传入全局kb实例以避免重复初始化")
+                    self.kb = KnowledgeBase()
+
                 self.retriever = self.kb.get_retriever()
-                
+
                 def retrieve_docs(query: str) -> str:
                     if not self.retriever: return "知识库未初始化。"
                     try:
@@ -89,6 +105,7 @@ class CustomsChatAgent:
                 print("[ChatAgent] Knowledge base tools loaded")
             except Exception as e:
                 print(f"❌ 知识库加载失败: {e}")
+                self.kb = None
         
         # --- 4. 保存系统提示词 (稍后在对话时注入) ---
         self.system_prompt_text = """

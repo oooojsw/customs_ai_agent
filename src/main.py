@@ -42,17 +42,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ [System] 数据库初始化失败: {e}")
 
-    # 初始化功能二：对话 Agent
+    # 初始化全局KnowledgeBase（单例模式，所有Agent共享）
     try:
-        app.state.agent = CustomsChatAgent()
+        from src.services.knowledge_base import KnowledgeBase
+        print("⚙️ [System] 正在初始化知识库（单例，全局共享）...")
+        app.state.kb = KnowledgeBase()  # ← 只创建一次，所有Agent共享
+        print("✅ [System] 知识库初始化完成")
+    except Exception as e:
+        print(f"❌ [System] 知识库初始化失败: {e}")
+        app.state.kb = None
+
+    # 初始化功能二：对话 Agent（传入全局kb实例）
+    try:
+        app.state.agent = CustomsChatAgent(kb=app.state.kb)  # ← 传入kb，避免重复创建
         print("✅ [System] 对话引擎（功能二）就绪")
     except Exception as e:
         print(f"❌ [System] 对话引擎初始化失败: {e}")
         app.state.agent = None
 
-    # 初始化功能三：报告 Agent
+    # 初始化功能三：报告 Agent（传入全局kb实例）
     try:
-        app.state.reporter = ComplianceReporter()
+        app.state.reporter = ComplianceReporter(kb=app.state.kb)  # ← 传入kb，避免重复创建
         print("✅ [System] 研判建议书引擎（功能三）就绪")
     except Exception as e:
         print(f"❌ [System] 报告引擎初始化失败: {e}")
