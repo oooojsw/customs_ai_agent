@@ -57,6 +57,38 @@
                         </button>
                     </div>
                 </div>
+
+                <!-- 索引管理区域 -->
+                <div>
+                    <label class="text-slate-400 text-sm block mb-2" data-i18n="index_management">知识库索引</label>
+
+                    <button id="reindexBtn" onclick="startRebuildIndex()" class="w-full py-2 bg-slate-700 hover:bg-slate-600 text-cyan-400 rounded text-sm font-bold border border-slate-600 transition flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-rotate" id="reindexIcon"></i>
+                        <span data-i18n="rebuild_index" id="reindexText">重建索引</span>
+                    </button>
+
+                    <!-- 当前处理文件 -->
+                    <div id="indexFileArea" class="hidden mt-2 text-xs text-slate-400">
+                        <i class="fa-solid fa-file-lines mr-1"></i>
+                        <span id="indexCurrentFile">正在处理...</span>
+                    </div>
+
+                    <!-- 向量化进度条 -->
+                    <div id="indexEmbeddingArea" class="hidden mt-3 space-y-2">
+                        <div class="relative h-2 bg-slate-700 rounded-full overflow-hidden">
+                            <div id="indexEmbeddingBar" class="h-full bg-gradient-to-r from-cyan-500 to-blue-500 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <div class="flex justify-between text-xs">
+                            <span id="indexEmbeddingStatus" class="text-slate-400">正在向量化...</span>
+                            <span id="indexEmbeddingPercent" class="text-cyan-400 font-bold">0%</span>
+                        </div>
+                    </div>
+
+                    <!-- 完成状态 -->
+                    <div id="indexCompleteArea" class="hidden mt-2 text-xs text-center">
+                        <span id="indexCompleteMessage"></span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -307,5 +339,6 @@
     <script src="js/audit.js?v=3.0.3"></script>
     <script src="js/chat.js?v=3.0.3"></script>
     <script src="js/report.js?v=3.0.3"></script>
+    <script src="js/index_manager.js?v=3.0.3"></script>
 </body>
 </html>

@@ -99,6 +99,18 @@ const translations = {
         sample6: '❌ 6.濒危红木',
         sample8: '❌ 8.两用物项',
         sample9: '❌ 9.币制错误',
+
+        // 索引管理
+        index_management: '知识库索引',
+        rebuild_index: '重建索引',
+        rebuilding: '重建中...',
+        index_initializing: '初始化...',
+        index_processing: '处理中',
+        index_complete: '索引重建完成',
+        index_cancelled: '索引重建已取消',
+        index_error: '索引重建失败',
+        total_files: '文件总数',
+        total_chunks: '片段总数',
     },
 
     vi: {
@@ -200,6 +212,18 @@ const translations = {
         sample6: '❌ 6.Gỗ quý hiếm',
         sample8: '❌ 8.Hàng hóa lưỡng dụng',
         sample9: '❌ 9.Lỗi tiền tệ',
+
+        // 索引管理
+        index_management: 'Chỉ mục cơ sở kiến thức',
+        rebuild_index: 'Xây dựng lại chỉ mục',
+        rebuilding: 'Đang xây dựng...',
+        index_initializing: 'Khởi tạo...',
+        index_processing: 'Đang xử lý',
+        index_complete: 'Xây dựng chỉ mục hoàn thành',
+        index_cancelled: 'Xây dựng chỉ mục đã hủy',
+        index_error: 'Xây dựng chỉ mục thất bại',
+        total_files: 'Tổng số tệp',
+        total_chunks: 'Tổng số đoạn',
     }
 };
 

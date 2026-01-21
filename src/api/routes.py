@@ -413,3 +413,97 @@ async def rebuild_pdf_index():
         return {"status": "success", "message": "功能开发中"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# ==========================================
+# 8. 知识库索引管理接口
+# ==========================================
+
+@router.post("/index/rebuild")
+async def rebuild_knowledge_base_index(request: Request):
+    """
+    重建知识库索引 (流式SSE响应)
+
+    SSE事件类型：
+    - init: 开始重建
+    - progress: 更新进度 {current, total, current_file, percentage}
+    - step: 阶段提示 {message, step}
+    - complete: 完成统计 {message, stats}
+    - error: 错误信息 {message}
+    - cancelled: 取消信息 {message}
+    """
+    kb = getattr(request.app.state, "kb", None)
+    if not kb:
+        raise HTTPException(status_code=503, detail="知识库服务未就绪")
+
+    return StreamingResponse(
+        kb.rebuild_index_stream(),
+        media_type="text/event-stream"
+    )
+
+@router.get("/index/status")
+async def get_index_status(request: Request):
+    """
+    获取索引状态
+
+    Returns:
+        {
+            "status": "success",
+            "data": {
+                "is_rebuilding": bool,
+                "progress": {
+                    "current": int,
+                    "total": int,
+                    "current_file": str,
+                    "percentage": float
+                },
+                "file_count": int,
+                "last_rebuild_time": float | None
+            }
+        }
+    """
+    kb = getattr(request.app.state, "kb", None)
+    if not kb:
+        return {
+            "status": "error",
+            "message": "知识库服务未就绪"
+        }
+
+    return {
+        "status": "success",
+        "data": {
+            "is_rebuilding": kb.is_rebuilding,
+            "progress": kb.progress,
+            "file_count": kb.file_count,
+            "last_rebuild_time": kb.last_rebuild_time
+        }
+    }
+
+@router.post("/index/cancel")
+async def cancel_index_rebuild(request: Request):
+    """
+    取消索引重建任务
+
+    Returns:
+        {
+            "status": "success",
+            "message": "取消请求已发送"
+        }
+    """
+    kb = getattr(request.app.state, "kb", None)
+    if not kb:
+        return {
+            "status": "error",
+            "message": "知识库服务未就绪"
+        }
+
+    if not kb.is_rebuilding:
+        return {
+            "status": "error",
+            "message": "没有正在进行的重建任务"
+        }
+
+    kb.cancel_rebuild()
+    return {
+        "status": "success",
+        "message": "取消请求已发送"
+    }
