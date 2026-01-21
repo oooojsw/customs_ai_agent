@@ -19,7 +19,7 @@ except ImportError:
 # --- 批量处理与数据库 (保留全量功能) ---
 try:
     from src.services.batch_processor import BatchProcessor, start_batch_processing
-    from src.database.connection import AsyncSessionLocal, get_async_session
+    from src.database.connection import AsyncSessionLocal
     from src.database.crud import BatchRepository
     BATCH_AVAILABLE = True
 except ImportError:
@@ -46,11 +46,32 @@ class ReportRequest(BaseModel):
 # 1. 智能审单接口 (功能一)
 # ==========================================
 @router.post("/analyze")
-async def analyze_customs_declaration(request: AnalysisRequest):
+async def analyze_customs_declaration(request: AnalysisRequest, req: Request):
     if not request.raw_data or len(request.raw_data.strip()) < 5:
         raise HTTPException(status_code=400, detail="数据太短，无法分析")
 
-    orchestrator = RiskAnalysisOrchestrator()
+    # 从 app.state 获取 LLM 配置
+    llm_config = None
+    try:
+        from src.config.loader import settings
+        # 优先使用数据库配置，回退到.env
+        if hasattr(req.app.state, 'llm_config') and req.app.state.llm_config:
+            llm_config = req.app.state.llm_config
+            print(f"[功能一] 使用全局配置: {llm_config['source']}")
+        else:
+            # 回退到.env配置
+            llm_config = {
+                'api_key': settings.DEEPSEEK_API_KEY,
+                'base_url': settings.DEEPSEEK_BASE_URL,
+                'model': settings.DEEPSEEK_MODEL,
+                'temperature': 0.3,
+                'source': 'env'
+            }
+            print(f"[功能一] 使用.env配置")
+    except Exception as e:
+        print(f"[功能一] 配置获取失败: {e}")
+
+    orchestrator = RiskAnalysisOrchestrator(llm_config=llm_config)
     return StreamingResponse(
         orchestrator.analyze_stream(request.raw_data, language=request.language),
         media_type="text/event-stream"
@@ -122,8 +143,8 @@ async def analyze_batch(file: UploadFile = File(...)):
     try:
         processor = BatchProcessor()
         items = await processor.parse_file(content, file.filename)
-        
-        async with get_async_session() as db:
+
+        async with AsyncSessionLocal() as db:
             repo = BatchRepository(db)
             task_uuid = await repo.create_batch_task(len(items))
             await repo.add_batch_items(task_uuid, items)
@@ -138,7 +159,7 @@ async def analyze_batch(file: UploadFile = File(...)):
 async def get_batch_progress(task_id: str):
     if not BATCH_AVAILABLE:
         raise HTTPException(status_code=501, detail="数据库不可用")
-    async with get_async_session() as db:
+    async with AsyncSessionLocal() as db:
         repo = BatchRepository(db)
         result = await repo.get_batch_progress(task_id)
         if not result:
@@ -528,7 +549,10 @@ class LLMConfigResponse(BaseModel):
     model_name: str
     temperature: float
     test_status: str
-    last_tested_at: Optional[str]
+    last_tested_at: Optional[str] = None
+    api_key: Optional[str] = None  # 添加API Key字段用于前端填充
+
+    model_config = {"exclude_unset": False}  # 确保所有字段都被序列化
 
 
 @router.get("/config/llm")
@@ -562,7 +586,8 @@ async def get_llm_config():
             model_name=config.model_name,
             temperature=config.temperature,
             test_status=config.test_status,
-            last_tested_at=config.last_tested_at.isoformat() if config.last_tested_at else None
+            last_tested_at=config.last_tested_at.isoformat() if config.last_tested_at else None,
+            api_key=config.api_key  # 返回API Key用于前端填充
         )
 
 

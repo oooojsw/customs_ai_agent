@@ -15,16 +15,27 @@ from src.config.loader import settings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class LLMService:
-    def __init__(self):
+    def __init__(self, llm_config: dict = None):
+        """
+        初始化 LLM 服务
+
+        Args:
+            llm_config: 可选的 LLM 配置字典 {
+                'api_key': str,
+                'base_url': str,
+                'model': str,
+                'source': 'user' | 'env'
+            }
+        """
         # ==========================================
         # 1. 初始化 HTTP Session (用于 Gemini REST API)
         # ==========================================
         self.session = requests.Session()
-        
+
         # 底层连接重试配置 (针对 Connection Reset / 断网)
         retry_strategy = Retry(
             total=3,
-            backoff_factor=1, 
+            backoff_factor=1,
             status_forcelist=[500, 502, 504],
             allowed_methods=["POST"],
             raise_on_status=False
@@ -42,7 +53,44 @@ class LLMService:
             # print(f"🌐 [LLMService] 已启用代理: {settings.HTTP_PROXY}")
 
         # ==========================================
-        # 2. 初始化 Azure OpenAI 客户端 (新增)
+        # 2. 初始化 DeepSeek 客户端 (优先使用用户配置)
+        # ==========================================
+        self._deepseek_client = None
+        self._deepseek_model = settings.DEEPSEEK_MODEL  # 默认使用.env配置
+        self._config_source = "env"  # 记录配置来源
+
+        if llm_config and llm_config.get('source') == 'user':
+            # 使用用户提供的配置
+            try:
+                self._deepseek_client = OpenAI(
+                    api_key=llm_config['api_key'],
+                    base_url=llm_config['base_url'],
+                    timeout=60.0
+                )
+                self._deepseek_model = llm_config.get('model', 'deepseek-chat')
+                self._config_source = "user"
+                print(f"[LLMService] 使用用户配置: {self._deepseek_model}")
+            except Exception as e:
+                print(f"[Warning] [LLMService] 用户配置初始化失败: {e}，回退到默认配置")
+                self._deepseek_client = None
+
+        # 回退到 .env 配置
+        if not self._deepseek_client and settings.DEEPSEEK_API_KEY:
+            try:
+                self._deepseek_client = OpenAI(
+                    api_key=settings.DEEPSEEK_API_KEY,
+                    base_url=settings.DEEPSEEK_BASE_URL,
+                    timeout=60.0
+                )
+                self._deepseek_model = settings.DEEPSEEK_MODEL
+                self._config_source = "env"
+                print("[LLMService] 使用.env配置")
+            except Exception as e:
+                print(f"[Warning] [LLMService] DeepSeek 初始化失败: {e}")
+                self._deepseek_client = None
+
+        # ==========================================
+        # 3. 初始化 Azure OpenAI 客户端 (仅使用.env配置，不支持用户配置)
         # ==========================================
         if all([settings.AZURE_OAI_KEY, settings.AZURE_OAI_ENDPOINT, settings.AZURE_OAI_DEPLOYMENT]):
             try:
@@ -59,23 +107,6 @@ class LLMService:
         else:
             self._azure_client = None
 
-        # ==========================================
-        # 3. 初始化 DeepSeek 客户端 (作为备用)
-        # ==========================================
-        if settings.DEEPSEEK_API_KEY:
-            try:
-                self._deepseek_client = OpenAI(
-                    api_key=settings.DEEPSEEK_API_KEY,
-                    base_url=settings.DEEPSEEK_BASE_URL,
-                    timeout=60.0
-                )
-                print("[LLMService] DeepSeek client ready")
-            except Exception as e:
-                print(f"[Warning] [LLMService] DeepSeek 初始化失败: {e}")
-                self._deepseek_client = None
-        else:
-            self._deepseek_client = None
-
     def call_llm(self, system_prompt: str, user_prompt: str) -> List[str]:
         """
         核心 LLM 调用函数，实现了三级备用逻辑。
@@ -84,6 +115,10 @@ class LLMService:
         """
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
+        # 打印当前使用的配置来源
+        config_label = "用户自定义配置" if self._config_source == "user" else ".env环境变量"
+        print(f"[LLM] 正在调用 LLM (配置来源: {config_label}, 模型: {self._deepseek_model})")
+
         # --- 第一级: 尝试 Gemini (速度最快，免费) ---
         if settings.GOOGLE_API_KEY:
             # print("INFO: [Attempt 1] Calling Gemini...")
@@ -91,7 +126,12 @@ class LLMService:
                 raw_text, model_name = self._call_gemini(system_prompt, user_prompt)
                 return self._parse_json_response(raw_text)
             except Exception as e:
-                print(f"[Warning] [LLM] Gemini 调用失败: {e}")
+                # 简化错误日志：只显示错误代码和简短信息
+                error_str = str(e)
+                if "429" in error_str:
+                    print("[LLM] Gemini API 配额已用完，切换到备用模型")
+                else:
+                    print(f"[LLM] Gemini 调用失败: {error_str[:100]}...")
         else:
             print("INFO: [LLM] Google API Key 未配置，跳过 Gemini")
 
@@ -102,8 +142,8 @@ class LLMService:
                 raw_text, model_name = self._call_azure_openai(full_prompt)
                 return self._parse_json_response(raw_text)
             except Exception as e:
-                print(f"[Warning] [LLM] Azure OpenAI 调用失败: {e}")
-        
+                print(f"[LLM] Azure OpenAI 调用失败: {str(e)[:100]}...")
+
         # --- 第三级: 尝试 DeepSeek (最强逻辑) ---
         if self._deepseek_client:
             print("INFO: [Attempt 3] Calling DeepSeek...")
@@ -111,8 +151,8 @@ class LLMService:
                 raw_text, model_name = self._call_deepseek(full_prompt)
                 return self._parse_json_response(raw_text)
             except Exception as e:
-                print(f"[Warning] [LLM] DeepSeek 调用失败: {e}")
-        
+                print(f"[LLM] DeepSeek 调用失败: {str(e)[:100]}...")
+
         # --- 所有模型均失败 ---
         print("[Error] [LLM] 严重错误: 所有可用模型均调用失败")
         return ["x", "系统错误：所有AI服务均不可用，请检查网络连接或API配额。"]
@@ -188,7 +228,7 @@ class LLMService:
         调用 DeepSeek
         """
         response = self._deepseek_client.chat.completions.create(
-            model=settings.DEEPSEEK_MODEL,
+            model=self._deepseek_model,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=8192,
             temperature=0.1

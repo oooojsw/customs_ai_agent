@@ -9,11 +9,17 @@ from src.core.prompt_builder import PromptBuilder
 from src.services.llm_service import LLMService
 
 class RiskAnalysisOrchestrator:
-    def __init__(self):
+    def __init__(self, llm_config: dict = None):
+        """
+        初始化审单流程编排器
+
+        Args:
+            llm_config: 可选的 LLM 配置字典 (api_key, base_url, model 等)
+        """
         # 初始化各个组件
         self.prompt_builder = PromptBuilder()
-        self.llm_service = LLMService()
-        
+        self.llm_service = LLMService(llm_config=llm_config)
+
         # 获取所有已启用的规则
         # 过滤掉 enabled: false 的规则
         self.active_rules = [r for r in self.prompt_builder.config['rules'] if r.get('enabled', True)]

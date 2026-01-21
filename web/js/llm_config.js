@@ -44,6 +44,17 @@ async function initLLMConfig() {
         document.getElementById('llmTemperature').value = config.temperature;
         document.getElementById('tempValue').innerText = config.temperature;
 
+        // 填充API Key（如果存在）
+        if (config.api_key) {
+            document.getElementById('llmApiKey').value = config.api_key;
+            console.log('[LLM Config] 已加载保存的API Key');
+        }
+
+        // 如果是Azure，填充api_version
+        if (config.api_version) {
+            document.getElementById('llmApiVersion').value = config.api_version;
+        }
+
         toggleLLMFields();
     } catch (error) {
         console.error('Failed to load LLM config:', error);

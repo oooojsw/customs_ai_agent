@@ -89,7 +89,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"❌ [System] 报告引擎初始化失败: {e}")
         app.state.reporter = None
-    
+
+    # 保存llm_config到app.state，供功能一使用
+    app.state.llm_config = llm_config
+    print(f"✅ [System] LLM配置已保存到 app.state (来源: {llm_config['source']})")
+
     # 自动打开浏览器
     async def open_browser():
         await asyncio.sleep(2.5)

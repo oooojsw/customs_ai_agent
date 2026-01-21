@@ -1,0 +1,92 @@
+====================================
+进度记录 - 2026-01-22
+====================================
+
+【任务】功能一（审单）支持用户配置的LLM
+
+【背景】
+用户发现：功能二（咨询）和功能三（报告）已经支持用户自定义LLM配置，但功能一（审单）仍然使用.env硬编码配置。
+
+【问题】
+功能一有两个地方使用LLM API：
+1. 图片OCR识别（未修改，按用户要求仅改审单部分）
+2. 审单风险分析（本次修改范围）
+
+【实施】
+
+1. 修改 src/core/orchestrator.py
+   - RiskAnalysisOrchestrator.__init__() 添加 llm_config 参数
+   - 将配置传递给 LLMService
+
+2. 修改 src/services/llm_service.py
+   - LLMService.__init__() 添加 llm_config 参数
+   - 优先使用用户配置：if llm_config and llm_config.get('source') == 'user'
+   - 新增实例变量 self._deepseek_model 存储模型名称
+   - _call_deepseek() 方法使用 self._deepseek_model 而非 settings.DEEPSEEK_MODEL
+
+3. 修改 src/api/routes.py
+   - /analyze 端点添加 req: Request 参数
+   - 从 req.app.state.llm_config 获取配置
+   - 传递给 RiskAnalysisOrchestrator(llm_config=llm_config)
+
+4. 修改 src/main.py
+   - lifespan() 函数中添加 app.state.llm_config = llm_config
+   - 使配置对功能一可用
+
+【Bug修复】
+初始实现中发现错误：
+- 错误：OpenAI.__init__() got an unexpected keyword argument 'model'
+- 原因：在 OpenAI 客户端初始化时传入了 model 参数（model应在调用时指定）
+- 修复：移除初始化时的 model 参数，改用实例变量 self._deepseek_model 存储
+
+【测试结果】
+服务器日志确认：
+- [功能一] 使用全局配置: user
+- [LLMService] 使用用户配置: deepseek-chat
+- INFO: [Attempt 3] Calling DeepSeek...
+
+API测试成功：
+- 调用 /api/v1/analyze 端点返回正常SSE流式数据
+- 风险分析逻辑正确执行
+
+【清理】
+- 删除测试文件 test_audit_config.py
+- 删除临时请求文件 temp_request.json
+
+【结论】
+✅ 功能一（审单）现已支持用户配置的LLM
+✅ 三个功能（审单/咨询/报告）统一使用同一份LLM配置
+✅ 配置优先级：用户数据库配置 > .env环境变量
+
+====================================
+【补充】Bug修复 - 2026-01-22
+====================================
+
+【问题】
+服务器日志显示：'async_generator' object does not support the asynchronous context manager protocol
+
+【原因】
+routes.py中批量处理功能使用了错误的数据库会话获取方式：
+- 错误：async with get_async_session() as db:
+- 正确：async with AsyncSessionLocal() as db:
+
+get_async_session()是异步生成器函数，不能直接用async with
+它应该作为FastAPI依赖注入使用，或者在内部使用AsyncSessionLocal()
+
+【修复】
+修改 src/api/routes.py:
+1. 第147行（批量处理任务创建）：改用 AsyncSessionLocal()
+2. 第162行（批量处理进度查询）：改用 AsyncSessionLocal()
+3. 第22行（import语句）：移除不再使用的 get_async_session
+
+【验证】
+服务器启动成功，日志显示：
+- ✅ [System] LLM配置已保存到 app.state (来源: user)
+- [功能一] 使用全局配置: user
+- [LLMService] 使用用户配置: deepseek-chat
+- API返回正常SSE流式数据，风险分析逻辑正确执行
+
+【结论】
+✅ 所有async context manager错误已修复
+✅ 功能一完全支持用户配置
+✅ 三个功能统一使用同一份LLM配置
