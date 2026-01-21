@@ -34,9 +34,16 @@ pydantic>=2.8.0                # 数据校验
 pandas>=2.0.0                 # 【新增】Excel/CSV 处理
 openpyxl>=3.1.0               # 【新增】Excel 文件支持
 
-# --- PDF处理 (Marker) ---
-marker-pdf==0.3.2              # Marker PDF处理库 (OCR + 文本提取)
+# --- PDF处理 ---
+pypdfium2>=5.0.0               # 【关键】快速PDF文本提取（当前使用）
+marker-pdf==0.3.2              # Marker PDF处理库 (OCR + 文本提取，备用)
 torch>=2.0.0                   # PyTorch (Marker依赖)
 transformers>=4.30.0           # HuggingFace Transformers
 pillow>=10.0.0                 # 图像处理
 pyyaml>=6.0                    # 配置文件解析
+
+# --- 其他工具库 ---
+numpy>=1.24.0                  # 数值计算（sentence-transformers依赖）
+scipy>=1.11.0                  # 科学计算（faiss依赖）
+scikit-learn>=1.3.0            # 机器学习（可选）
+huggingface-hub>=0.20.0       # HuggingFace模型下载
