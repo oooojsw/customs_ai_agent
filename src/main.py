@@ -27,13 +27,21 @@ from fastapi.staticfiles import StaticFiles
 from src.api.routes import router as api_router
 from src.services.chat_agent import CustomsChatAgent
 from src.services.report_agent import ComplianceReporter
+from src.database.base import init_database
 
 # --- 4. 生命周期管理 ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("\n" + "="*50)
     print("🚀 [System] 智慧口岸服务开始初始化...")
-    
+
+    # 初始化数据库
+    try:
+        await init_database()
+        print("✅ [System] 数据库初始化完成")
+    except Exception as e:
+        print(f"❌ [System] 数据库初始化失败: {e}")
+
     # 初始化功能二：对话 Agent
     try:
         app.state.agent = CustomsChatAgent()

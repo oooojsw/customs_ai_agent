@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, Float
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 # 1. 定义基类，所有模型都要继承它
@@ -90,3 +90,44 @@ class BatchItem(Base):
 
     # 反向关联
     batch_task = relationship("BatchTask", back_populates="items")
+
+# 6. 定义【PDF文档缓存表】
+# 用于存储Marker处理结果，避免重复OCR
+class PDFDocument(Base):
+    __tablename__ = "pdf_documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_path = Column(String(500), unique=True, nullable=False, index=True)
+    file_name = Column(String(255), nullable=False)
+    file_hash = Column(String(64), unique=True, nullable=False, index=True)
+    file_size = Column(Integer, nullable=False)
+
+    # Marker处理结果
+    processed_text = Column(Text, nullable=False)
+    char_count = Column(Integer, nullable=False)
+    page_count = Column(Integer, default=0)
+
+    # 处理状态
+    processing_status = Column(String(20), default="completed", nullable=False)
+    error_message = Column(Text, nullable=True)
+
+    # 性能指标
+    processing_time = Column(Float, default=0.0)
+    marker_version = Column(String(50), nullable=True)
+
+    # 时间戳
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+    last_validated_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<PDFDocument(id={self.id}, file_name={self.file_name}, status={self.processing_status})>"
+
+    @property
+    def is_valid(self) -> bool:
+        """检查缓存是否有效 (状态为completed且有文本内容)"""
+        return (
+            self.processing_status == "completed"
+            and self.processed_text
+            and len(self.processed_text) > 100
+        )

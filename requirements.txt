@@ -33,3 +33,10 @@ tiktoken>=0.7.0                # Token 计算
 pydantic>=2.8.0                # 数据校验
 pandas>=2.0.0                 # 【新增】Excel/CSV 处理
 openpyxl>=3.1.0               # 【新增】Excel 文件支持
+
+# --- PDF处理 (Marker) ---
+marker-pdf==0.3.2              # Marker PDF处理库 (OCR + 文本提取)
+torch>=2.0.0                   # PyTorch (Marker依赖)
+transformers>=4.30.0           # HuggingFace Transformers
+pillow>=10.0.0                 # 图像处理
+pyyaml>=6.0                    # 配置文件解析

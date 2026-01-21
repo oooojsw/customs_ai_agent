@@ -164,7 +164,7 @@ function handleReportEvent(event) {
                 <i class="fa-solid fa-file-lines text-blue-400"></i>
                 <div class="flex-1 truncate">
                     <div class="text-white">${payload.filename}</div>
-                    <div class="text-[10px] text-slate-500">${payload.snippet}</div>
+                    <div class="text-[10px] text-slate-500">${payload.snippet.substring(0, 50)}${payload.snippet.length > 50 ? '...' : ''}</div>
                 </div>
                 <span class="text-green-500 font-bold">${Math.floor(payload.score*100)}%</span>
                 <i class="fa-solid fa-chevron-right chevron-icon text-xs text-slate-400"></i>
@@ -173,49 +173,74 @@ function handleReportEvent(event) {
             // 创建内容区域
             const content = document.createElement('div');
             content.className = 'rag-content hidden mt-3 pt-3 border-t border-slate-600 text-xs text-slate-300';
-            content.innerHTML = `<div class="rag-loading"><i class="fa-solid fa-spinner fa-spin"></i> ${t('loading')}</div>`;
+
+            // 直接显示 RAG 检索到的片段，而不是加载完整文件
+            content.innerHTML = `
+                <div class="mb-3">
+                    <div class="text-xs text-cyan-400 mb-2">
+                        <i class="fa-solid fa-magnifying-glass mr-1"></i>
+                        RAG 检索匹配内容：
+                    </div>
+                    <div class="whitespace-pre-wrap font-mono text-xs leading-relaxed bg-slate-900/50 p-3 rounded border border-slate-700">
+                        ${payload.snippet}
+                    </div>
+                </div>
+                <button class="view-full-file-btn text-xs text-blue-400 hover:text-blue-300 underline">
+                    <i class="fa-solid fa-file-lines mr-1"></i>
+                    查看完整文件
+                </button>
+            `;
 
             // 获取箭头元素
             const chevron = header.querySelector('.chevron-icon');
-            console.log('chevron element:', chevron); // 调试
 
-            // 绑定点击事件
+            // 绑定点击事件（展开/收起）
             header.onclick = async (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('=== 点击事件触发 ==='); // 调试
-                console.log('文件名:', payload.filename);
+
                 const isHidden = content.classList.contains('hidden');
-                console.log('当前状态:', isHidden ? '隐藏' : '展开');
 
                 if (isHidden) {
                     content.classList.remove('hidden');
                     chevron.style.transform = 'rotate(90deg)';
-                    console.log('展开内容区域');
-
-                    // 如果还未加载内容，则加载
-                    const loadingDiv = content.querySelector('.rag-loading');
-                    if (loadingDiv) {
-                        try {
-                            console.log('开始加载 RAG 内容...');
-                            const ragContent = await loadRagContentForReport(payload.filename);
-                            console.log('RAG 内容加载完成，长度:', ragContent.length);
-                            content.innerHTML = `
-                                <div class="whitespace-pre-wrap font-mono text-xs leading-relaxed">
-${ragContent}
-                                </div>
-                            `;
-                        } catch (error) {
-                            console.error('加载 RAG 内容失败:', error);
-                            content.innerHTML = `<p class="text-red-400">${t('load_file_failed')}</p>`;
-                        }
-                    }
                 } else {
                     content.classList.add('hidden');
                     chevron.style.transform = 'rotate(0deg)';
-                    console.log('收起内容区域');
                 }
             };
+
+            // 绑定"查看完整文件"按钮事件
+            const viewFullBtn = content.querySelector('.view-full-file-btn');
+            if (viewFullBtn) {
+                viewFullBtn.onclick = async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    // 显示加载动画
+                    viewFullBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1"></i>加载中...';
+
+                    try {
+                        const fullContent = await loadRagContentForReport(payload.filename);
+
+                        // 替换按钮为完整文件内容
+                        viewFullBtn.parentElement.innerHTML = `
+                            <div class="mt-3 pt-3 border-t border-slate-600">
+                                <div class="text-xs text-yellow-400 mb-2">
+                                    <i class="fa-solid fa-file-lines mr-1"></i>
+                                    完整文件内容：
+                                </div>
+                                <div class="whitespace-pre-wrap font-mono text-xs leading-relaxed bg-slate-900/50 p-3 rounded border border-slate-700 max-h-96 overflow-y-auto">
+                                    ${fullContent}
+                                </div>
+                            </div>
+                        `;
+                    } catch (error) {
+                        viewFullBtn.innerHTML = `<span class="text-red-400">加载失败</span>`;
+                        console.error('加载完整文件失败:', error);
+                    }
+                };
+            }
 
             // 组装卡片
             card.appendChild(header);
@@ -232,6 +257,42 @@ ${ragContent}
             card.innerHTML = `<i class="fa-solid fa-pen-to-square mr-1"></i> ${payload.content}`;
             evidenceEl.appendChild(card);
             evidenceEl.scrollTop = evidenceEl.scrollHeight;
+        }
+        else if (type === 'research_decision') {
+            const { round, decision, reason, source, confidence, metrics } = payload;
+            const logEl = document.getElementById('thought-log');
+
+            const decisionDiv = document.createElement('div');
+
+            // 根据 source 和 decision 显示不同样式
+            const isAI = source === 'ai';
+            const bgColor = decision === 'stop'
+                ? (isAI ? 'bg-purple-900/30 border-purple-600' : 'bg-red-900/30 border-red-600')
+                : (isAI ? 'bg-blue-900/30 border-blue-600' : 'bg-yellow-900/30 border-yellow-600');
+
+            const icon = decision === 'stop' ? 'fa-stop-circle' : 'fa-arrow-right';
+            const sourceBadge = isAI
+                ? '<span class="text-xs bg-purple-700 px-1 rounded ml-1">AI</span>'
+                : '<span class="text-xs bg-gray-600 px-1 rounded ml-1">规则</span>';
+
+            decisionDiv.className = `terminal-line ${bgColor} border rounded px-2 py-1 mb-2`;
+            decisionDiv.innerHTML = `
+                <span class="terminal-timestamp">[DECISION Round ${round}]</span>
+                ${sourceBadge}
+                <i class="fa-solid ${icon}"></i>
+                <span class="font-bold">${decision === 'stop' ? '停止检索' : '继续检索'}</span>
+                ${isAI ? `<span class="text-xs text-slate-400 ml-1">置信度: ${(confidence * 100).toFixed(0)}%</span>` : ''}
+                <div class="text-slate-300 text-xs mt-1">${reason}</div>
+                <div class="mt-1 text-xs text-slate-500">
+                    质量: ${(metrics.total_quality * 100).toFixed(0)}% |
+                    相似度: ${(metrics.score * 100).toFixed(0)}% |
+                    丰富度: ${(metrics.richness * 100).toFixed(0)}% |
+                    去重: ${(metrics.dedup * 100).toFixed(0)}%
+                </div>
+            `;
+
+            logEl.appendChild(decisionDiv);
+            logEl.scrollTop = logEl.scrollHeight;
         }
     }
 
@@ -489,47 +550,31 @@ const ragFileContents = {
 
 // 加载 RAG 文件内容
 async function loadRagContentForReport(filename) {
-    console.log('loadRagContentForReport 被调用，文件名:', filename); // 调试日志
+    console.log('loadRagContentForReport 被调用，文件名:', filename);
 
-    // 模拟网络延迟
-    await new Promise(resolve => setTimeout(resolve, 300));
+    try {
+        // 调用后端 API 获取文件内容
+        const apiUrl = `/api/v1/knowledge/content/${encodeURIComponent(filename)}`;
+        console.log('请求 API:', apiUrl);
 
-    // 查找匹配的文件（改进的模糊匹配）
-    const matchedKey = Object.keys(ragFileContents).find(key => {
-        const keyLower = key.toLowerCase().replace('.txt', '');
-        const filenameLower = filename.toLowerCase().replace('.txt', '');
+        const response = await fetch(apiUrl);
 
-        console.log('尝试匹配:', keyLower, 'vs', filenameLower); // 调试日志
-
-        // 直接匹配
-        if (keyLower === filenameLower) {
-            console.log('找到直接匹配'); // 调试日志
-            return true;
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        // 包含匹配
-        if (filenameLower.includes(keyLower) || keyLower.includes(filenameLower)) {
-            console.log('找到包含匹配'); // 调试日志
-            return true;
+        const data = await response.json();
+        console.log('API 响应:', data);
+
+        if (data.status === 'success') {
+            return data.content;
+        } else {
+            // 文件未找到或其他错误
+            return data.content || `${t('no_file_content')}\n\n文件名: ${filename}`;
         }
 
-        // 关键词匹配（去掉常见的规则前缀）
-        const keyClean = keyLower.replace(/^(rag_r0\d_)/, '').replace(/_/g, '');
-        const filenameClean = filenameLower.replace(/^(rag_r0\d_)/, '').replace(/_/g, '');
-
-        if (keyClean === filenameClean || filenameClean.includes(keyClean) || keyClean.includes(filenameClean)) {
-            console.log('找到关键词匹配:', keyClean, 'vs', filenameClean); // 调试日志
-            return true;
-        }
-
-        return false;
-    });
-
-    console.log('最终匹配结果:', matchedKey); // 调试日志
-
-    if (matchedKey) {
-        return ragFileContents[matchedKey];
+    } catch (error) {
+        console.error('加载 RAG 内容失败:', error);
+        return `${t('load_file_failed')}\n\n错误: ${error.message}\n\n文件名: ${filename}`;
     }
-
-    return `${t('no_file_content')}\n\n文件名: ${filename}\n\n可用的文件:\n${Object.keys(ragFileContents).join('\n')}`;
 }
