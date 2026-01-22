@@ -28,6 +28,39 @@ except ImportError:
 
 router = APIRouter()
 
+# --- 辅助函数：动态获取 LLM 配置 ---
+async def get_current_llm_config(req: Request) -> dict:
+    """
+    动态获取当前 LLM 配置，每次都检查数据库的 is_enabled 状态
+
+    Returns:
+        配置字典 {
+            'api_key': str,
+            'base_url': str,
+            'model': str,
+            'temperature': float,
+            'source': 'user' | 'env'
+        }
+    """
+    try:
+        from src.config.llm_loader import llm_config_loader
+
+        # 每次都从数据库重新加载配置，检查 is_enabled 状态
+        async with AsyncSessionLocal() as db:
+            config = await llm_config_loader.load_config(db)
+        return config
+
+    except Exception as e:
+        print(f"[Config] 配置获取失败: {e}，回退到 .env")
+        from src.config.loader import settings
+        return {
+            'api_key': settings.DEEPSEEK_API_KEY,
+            'base_url': settings.DEEPSEEK_BASE_URL,
+            'model': settings.DEEPSEEK_MODEL,
+            'temperature': 0.3,
+            'source': 'env'
+        }
+
 # --- 请求体定义 ---
 class AnalysisRequest(BaseModel):
     raw_data: str
@@ -50,26 +83,9 @@ async def analyze_customs_declaration(request: AnalysisRequest, req: Request):
     if not request.raw_data or len(request.raw_data.strip()) < 5:
         raise HTTPException(status_code=400, detail="数据太短，无法分析")
 
-    # 从 app.state 获取 LLM 配置
-    llm_config = None
-    try:
-        from src.config.loader import settings
-        # 优先使用数据库配置，回退到.env
-        if hasattr(req.app.state, 'llm_config') and req.app.state.llm_config:
-            llm_config = req.app.state.llm_config
-            print(f"[功能一] 使用全局配置: {llm_config['source']}")
-        else:
-            # 回退到.env配置
-            llm_config = {
-                'api_key': settings.DEEPSEEK_API_KEY,
-                'base_url': settings.DEEPSEEK_BASE_URL,
-                'model': settings.DEEPSEEK_MODEL,
-                'temperature': 0.3,
-                'source': 'env'
-            }
-            print(f"[功能一] 使用.env配置")
-    except Exception as e:
-        print(f"[功能一] 配置获取失败: {e}")
+    # 动态获取 LLM 配置（每次都检查数据库的 is_enabled 状态）
+    llm_config = await get_current_llm_config(req)
+    print(f"[功能一] 使用配置来源: {llm_config['source']}")
 
     orchestrator = RiskAnalysisOrchestrator(llm_config=llm_config)
     return StreamingResponse(
@@ -82,9 +98,15 @@ async def analyze_customs_declaration(request: AnalysisRequest, req: Request):
 # ==========================================
 @router.post("/chat")
 async def chat_with_agent(body: ChatRequest, request: Request):
-    agent = getattr(request.app.state, "agent", None)
-    if not agent:
-        raise HTTPException(status_code=503, detail="对话引擎未就绪")
+    # 动态获取配置并创建临时 agent
+    llm_config = await get_current_llm_config(request)
+
+    # 获取全局 kb 实例（如果存在）
+    kb = getattr(request.app.state, "kb", None)
+
+    # 使用当前配置创建临时 agent
+    from src.services.chat_agent import CustomsChatAgent
+    agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
 
     return StreamingResponse(
         agent.chat_stream(body.message, body.session_id, language=body.language),
@@ -97,9 +119,14 @@ async def chat_with_agent(body: ChatRequest, request: Request):
 @router.post("/generate_report")
 async def generate_compliance_report(body: ReportRequest, req: Request):
     try:
-        reporter = getattr(req.app.state, "reporter", None)
-        if not reporter:
-            reporter = ComplianceReporter() # 现场兜底初始化
+        # 动态获取配置并创建临时 reporter
+        llm_config = await get_current_llm_config(req)
+
+        # 获取全局 kb 实例（如果存在）
+        kb = getattr(req.app.state, "kb", None)
+
+        # 使用当前配置创建临时 reporter
+        reporter = ComplianceReporter(kb=kb, llm_config=llm_config)
 
         return StreamingResponse(
             reporter.generate_stream(body.raw_data, language=body.language),
@@ -540,6 +567,7 @@ class LLMConfigRequest(BaseModel):
     model_name: str
     api_version: Optional[str] = None
     temperature: Optional[float] = 0.3
+    is_enabled: Optional[bool] = True  # 新增：接收前端开关状态
 
 
 class LLMConfigResponse(BaseModel):
@@ -668,6 +696,10 @@ async def reload_llm_config(request: Request):
         async with AsyncSessionLocal() as db:
             llm_config = await llm_config_loader.load_config(db)
 
+        # ✅ 修复：更新 app.state.llm_config（关键！）
+        # 功能一依赖此配置，必须更新
+        request.app.state.llm_config = llm_config
+
         # 重新初始化 Agent
         kb = request.app.state.kb
         request.app.state.agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
@@ -677,6 +709,7 @@ async def reload_llm_config(request: Request):
             "status": "success",
             "message": "配置已重新加载",
             "config": {
+                "source": llm_config.get('source', 'unknown'),
                 "provider": llm_config.get('source', 'unknown'),
                 "model": llm_config['model'],
                 "base_url": llm_config['base_url']

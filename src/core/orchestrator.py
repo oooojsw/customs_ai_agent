@@ -122,13 +122,21 @@ class RiskAnalysisOrchestrator:
             await asyncio.sleep(1)
 
         # --- 阶段 3: 最终总结 ---
-        # 所有步骤跑完，给出一个总结论
-        final_conclusion = "[OK] 建议放行：未发现明显风险点。"
-        final_status = "pass"
-        
-        if risk_count > 0:
-            final_conclusion = f"[Warning] 建议转人工查验：共发现 {risk_count} 项风险指标。\n" + "\n".join(risk_details)
-            final_status = "risk"
+        # 所有步骤跑完，给出一个总结论（支持多语言）
+        if language == "vi":
+            final_conclusion = "[OK] Đề xuất thông quan: Không phát hiện rủi ro rõ ràng."
+            final_status = "pass"
+
+            if risk_count > 0:
+                final_conclusion = f"[Cảnh báo] Đề xuất chuyển kiểm tra thủ công: Phát hiện {risk_count} chỉ số rủi ro.\n" + "\n".join(risk_details)
+                final_status = "risk"
+        else:
+            final_conclusion = "[OK] 建议放行：未发现明显风险点。"
+            final_status = "pass"
+
+            if risk_count > 0:
+                final_conclusion = f"[Warning] 建议转人工查验：共发现 {risk_count} 项风险指标。\n" + "\n".join(risk_details)
+                final_status = "risk"
 
         yield self._format_sse({
             "type": "complete",

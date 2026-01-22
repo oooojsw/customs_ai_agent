@@ -55,10 +55,55 @@ async function initLLMConfig() {
             document.getElementById('llmApiVersion').value = config.api_version;
         }
 
+        // ✅ 新增：显示当前配置来源
+        updateConfigSourceDisplay(config);
+
         toggleLLMFields();
     } catch (error) {
         console.error('Failed to load LLM config:', error);
     }
+}
+
+/**
+ * ✅ 新增：更新配置来源显示
+ * @param {Object} config - LLM配置对象
+ */
+function updateConfigSourceDisplay(config) {
+    // 获取或创建配置来源标签元素
+    let sourceLabel = document.getElementById('configSourceLabel');
+    if (!sourceLabel) {
+        // 如果不存在，动态创建（添加到开关旁边）
+        const enabledLabel = document.querySelector('label[for="llmEnabled"]');
+        if (enabledLabel && enabledLabel.parentElement) {
+            sourceLabel = document.createElement('div');
+            sourceLabel.id = 'configSourceLabel';
+            sourceLabel.className = 'text-sm mt-2 px-3 py-2 rounded bg-gray-100 dark:bg-gray-800';
+            sourceLabel.style.cssText = 'font-size: 0.875rem; margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-radius: 0.375rem;';
+            enabledLabel.parentElement.after(sourceLabel);
+        }
+    }
+
+    if (sourceLabel) {
+        // 根据配置来源显示不同的样式和文本
+        if (!config.is_enabled) {
+            // 使用.env配置
+            sourceLabel.textContent = '✓ 当前配置：.env 环境变量';
+            sourceLabel.style.color = '#10b981'; // 绿色
+            sourceLabel.style.backgroundColor = '#d1fae5';
+            sourceLabel.style.border = '1px solid #10b981';
+        } else {
+            // 使用用户配置
+            const providerName = config.provider || '未知';
+            sourceLabel.textContent = `✓ 当前配置：用户自定义 (${providerName}/${config.model_name})`;
+            sourceLabel.style.color = '#3b82f6'; // 蓝色
+            sourceLabel.style.backgroundColor = '#dbeafe';
+            sourceLabel.style.border = '1px solid #3b82f6';
+        }
+    }
+
+    // 在控制台显示配置来源
+    const source = config.is_enabled ? 'user' : 'env';
+    console.log(`[LLM Config] 配置来源: ${source}, 模型: ${config.model_name}, 是否启用: ${config.is_enabled}`);
 }
 
 function toggleLLMFields() {
@@ -66,9 +111,82 @@ function toggleLLMFields() {
     const form = document.getElementById('llmConfigForm');
     form.classList.toggle('hidden', !enabled);
 
+    // ✅ 新增：实时更新配置来源显示（预览模式）
+    const config = {
+        is_enabled: enabled,
+        provider: document.getElementById('llmProvider').value,
+        model_name: getModelName()
+    };
+    updateConfigSourceDisplay(config);
+
+    // ✅ 核心修复：自动保存配置到后端
+    autoSaveConfig(enabled);
+
     // 启用时自动获取模型列表
     if (enabled) {
         fetchModels();
+    }
+}
+
+/**
+ * ✅ 新增：自动保存配置（开关变化时调用）
+ * @param {boolean} enabled - 是否启用用户配置
+ */
+async function autoSaveConfig(enabled) {
+    try {
+        // 准备配置数据
+        const config = {
+            provider: document.getElementById('llmProvider').value,
+            api_key: document.getElementById('llmApiKey').value,
+            base_url: document.getElementById('llmBaseUrl').value,
+            model_name: getModelName() || 'deepseek-chat', // 默认值
+            temperature: parseFloat(document.getElementById('llmTemperature').value),
+            is_enabled: enabled
+        };
+
+        // Azure 特殊处理
+        if (config.provider === 'azure') {
+            config.api_version = document.getElementById('llmApiVersion').value;
+        }
+
+        // 如果启用但没有 API Key，提示用户但不阻止
+        if (enabled && !config.api_key) {
+            console.warn('[LLM Config] 启用了自定义配置但未填写 API Key');
+        }
+
+        // 1. 保存配置
+        const saveResponse = await fetch('/api/v1/config/llm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+
+        const saveResult = await saveResponse.json();
+
+        if (saveResult.status !== 'success') {
+            console.error('[LLM Config] 保存失败:', saveResult.message);
+            return;
+        }
+
+        console.log(`[LLM Config] 配置已${enabled ? '启用' : '禁用'}，正在热重载...`);
+
+        // 2. 热重载配置
+        const reloadResponse = await fetch('/api/v1/config/llm/reload', {
+            method: 'POST'
+        });
+
+        const reloadResult = await reloadResponse.json();
+
+        if (reloadResult.status === 'success') {
+            const reloadConfig = reloadResult.config || {};
+            const sourceText = reloadConfig.source === 'env' ? '.env 环境变量' : '用户自定义';
+            console.log(`[LLM Config] ✓ 热重载成功！当前配置来源：${sourceText}`);
+        } else {
+            console.error('[LLM Config] 热重载失败:', reloadResult.message);
+        }
+
+    } catch (error) {
+        console.error('[LLM Config] 自动保存失败:', error);
     }
 }
 
@@ -330,7 +448,8 @@ async function saveLLMConfig() {
         api_key: document.getElementById('llmApiKey').value,
         base_url: document.getElementById('llmBaseUrl').value,
         model_name: modelName,
-        temperature: parseFloat(document.getElementById('llmTemperature').value)
+        temperature: parseFloat(document.getElementById('llmTemperature').value),
+        is_enabled: document.getElementById('llmEnabled').checked  // 包含开关状态
     };
 
     // 添加Azure的api_version参数
@@ -352,6 +471,8 @@ async function saveLLMConfig() {
             throw new Error(saveResult.message);
         }
 
+        console.log('[LLM Config] 配置已保存');
+
         // 2. 热重载配置
         const reloadResponse = await fetch('/api/v1/config/llm/reload', {
             method: 'POST'
@@ -360,8 +481,15 @@ async function saveLLMConfig() {
         const reloadResult = await reloadResponse.json();
 
         if (reloadResult.status === 'success') {
-            alert('✅ 配置已保存并应用！');
-            toggleSettings();
+            const reloadConfig = reloadResult.config || {};
+            const sourceText = reloadConfig.source === 'env' ? '.env 环境变量' : '用户自定义';
+            console.log('[LLM Config] 配置已重载:', reloadConfig);
+
+            // ✅ 优化：显示简洁的提示，不再刷新页面
+            alert(`✅ 配置已保存并应用！\n\n当前配置来源：${sourceText}\n模型：${reloadConfig.model || config.model_name}`);
+
+            // ✅ 优化：更新配置来源显示（不需要刷新页面）
+            updateConfigSourceDisplay(config);
         } else {
             throw new Error(reloadResult.message);
         }
@@ -371,23 +499,49 @@ async function saveLLMConfig() {
 }
 
 async function resetLLMConfig() {
-    if (!confirm('确定要重置为 .env 默认配置吗？')) return;
+    if (!confirm('确定要切换回 .env 配置吗？\n\n这将禁用所有自定义配置，系统将使用 .env 文件中的环境变量。')) {
+        return;
+    }
 
     try {
-        const response = await fetch('/api/v1/config/llm/reset', {
+        // 1. 调用重置端点（禁用所有用户配置）
+        const resetResponse = await fetch('/api/v1/config/llm/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const resetResult = await resetResponse.json();
+
+        if (resetResult.status !== 'success') {
+            throw new Error(resetResult.message || '重置失败');
+        }
+
+        // 2. 热重载配置（确保 app.state.llm_config 更新）
+        const reloadResponse = await fetch('/api/v1/config/llm/reload', {
             method: 'POST'
         });
 
-        const result = await response.json();
+        const reloadResult = await reloadResponse.json();
 
-        if (result.status === 'success') {
-            alert('✅ 已重置，正在重新加载...');
-            location.reload();
+        if (reloadResult.status === 'success') {
+            const reloadConfig = reloadResult.config || {};
+            console.log('[LLM Config] 已重置为 .env 配置:', reloadConfig);
+
+            // 3. ✅ 优化：更新UI状态，不需要刷新页面
+            // 关闭开关
+            document.getElementById('llmEnabled').checked = false;
+            // 隐藏配置表单
+            document.getElementById('llmConfigForm').classList.add('hidden');
+            // 更新配置来源显示
+            updateConfigSourceDisplay({ is_enabled: false, provider: 'deepseek', model_name: reloadConfig.model });
+
+            alert('✅ 已切换到 .env 配置！\n\n模型：' + (reloadConfig.model || 'deepseek-chat'));
         } else {
-            alert('❌ 重置失败: ' + result.message);
+            throw new Error(reloadResult.message || '重载失败');
         }
     } catch (error) {
-        alert('❌ 重置失败: ' + error.message);
+        console.error('[Config Reset Error]', error);
+        alert('❌ 切换失败: ' + error.message);
     }
 }
 

@@ -109,7 +109,8 @@ class LLMService:
 
     def call_llm(self, system_prompt: str, user_prompt: str) -> List[str]:
         """
-        核心 LLM 调用函数，实现了三级备用逻辑。
+        核心 LLM 调用函数（功能一：审单）
+        直接使用 DeepSeek，不再尝试其他模型
         返回格式: [ "符号", "理由" ]
         例如: ["x", "HS编码与品名不符"] 或 ["√", "申报要素完整"]
         """
@@ -117,45 +118,20 @@ class LLMService:
 
         # 打印当前使用的配置来源
         config_label = "用户自定义配置" if self._config_source == "user" else ".env环境变量"
-        print(f"[LLM] 正在调用 LLM (配置来源: {config_label}, 模型: {self._deepseek_model})")
+        print(f"[LLM] 正在调用 DeepSeek (配置来源: {config_label}, 模型: {self._deepseek_model})")
 
-        # --- 第一级: 尝试 Gemini (速度最快，免费) ---
-        if settings.GOOGLE_API_KEY:
-            # print("INFO: [Attempt 1] Calling Gemini...")
-            try:
-                raw_text, model_name = self._call_gemini(system_prompt, user_prompt)
-                return self._parse_json_response(raw_text)
-            except Exception as e:
-                # 简化错误日志：只显示错误代码和简短信息
-                error_str = str(e)
-                if "429" in error_str:
-                    print("[LLM] Gemini API 配额已用完，切换到备用模型")
-                else:
-                    print(f"[LLM] Gemini 调用失败: {error_str[:100]}...")
-        else:
-            print("INFO: [LLM] Google API Key 未配置，跳过 Gemini")
-
-        # --- 第二级: 尝试 Azure OpenAI (企业级稳定) ---
-        if self._azure_client:
-            print("INFO: [Attempt 2] Calling Azure OpenAI...")
-            try:
-                raw_text, model_name = self._call_azure_openai(full_prompt)
-                return self._parse_json_response(raw_text)
-            except Exception as e:
-                print(f"[LLM] Azure OpenAI 调用失败: {str(e)[:100]}...")
-
-        # --- 第三级: 尝试 DeepSeek (最强逻辑) ---
+        # --- 直接使用 DeepSeek ---
         if self._deepseek_client:
-            print("INFO: [Attempt 3] Calling DeepSeek...")
             try:
                 raw_text, model_name = self._call_deepseek(full_prompt)
                 return self._parse_json_response(raw_text)
             except Exception as e:
                 print(f"[LLM] DeepSeek 调用失败: {str(e)[:100]}...")
+                return ["x", f"系统错误：AI服务调用失败 - {str(e)[:50]}"]
 
-        # --- 所有模型均失败 ---
-        print("[Error] [LLM] 严重错误: 所有可用模型均调用失败")
-        return ["x", "系统错误：所有AI服务均不可用，请检查网络连接或API配额。"]
+        # --- DeepSeek 未初始化 ---
+        print("[Error] [LLM] DeepSeek 未初始化，请检查API配置")
+        return ["x", "系统错误：DeepSeek未配置，请检查API Key"]
 
     def _call_gemini(self, system_p: str, user_p: str) -> Tuple[str, str]:
         """

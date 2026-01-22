@@ -4,6 +4,11 @@
 .env.local
 .env.*.local
 
+# 忽略 npm 缓存文件夹（必须在最前面，避免被其他规则覆盖）
+**/UsersZhuanZnpm-cache/
+UsersZhuanZnpm-cache/
+**/*npm-cache/
+
 # 忽略 Python 编译产生的垃圾文件
 __pycache__/
 *.py[cod]
@@ -132,8 +137,10 @@ test_batch.xlsx
 .claude/           # Claude Code 工作目录，包含 test_records.md（可能包含敏感测试数据）
 .roo/              # Roo Code 工具配置
 npm-cache/         # npm 缓存
+**/npm-cache/      # 任何位置的 npm 缓存
 Users*npm-cache/   # Windows 用户 npm 缓存
-UsersZhuanZnpm-cache/  # Windows 用户 npm 缓存（具体路径）
+**/Users*npm-cache/   # Windows 用户 npm 缓存（任何位置）
+**/UsersZhuanZnpm-cache/   # Windows 用户 npm 缓存（任何位置，完全忽略）
 
 # 忽略 Claude Code 临时文件
 tmpclaude*
@@ -157,3 +164,11 @@ AGENTS.md
 nul
 索引忽略指引.txt
 重建索引日志.txt
+
+# 忽略个人文件（APK安装包、视频文件等）
+*.apk
+*.v
+*.mp4
+*.avi
+*.mov
+*.mkv

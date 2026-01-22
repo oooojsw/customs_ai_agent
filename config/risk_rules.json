@@ -22,7 +22,8 @@
         "color": "blue"
       },
       "rag_file": "rag_r01_basic_info.txt",
-      "instruction": "请结合提供的【海关高级审查指导文件】，重点检查报关数据中的高科技商品（如IC、机械）是否提供了具体的型号、零件编号、功能说明等关键要素。如果仅有模糊描述（如'配件'、'无型号'），请判定为风险。"
+      "instruction": "请结合提供的【海关高级审查指导文件】，重点检查报关数据中的高科技商品（如IC、机械）是否提供了具体的型号、零件编号、功能说明等关键要素。如果仅有模糊描述（如'配件'、'无型号'），请判定为风险。",
+      "instruction_vi": "Kết hợp với【Tài liệu hướng dẫn kiểm tra hải quan cấp cao】được cung cấp, tập trung kiểm tra xem hàng hóa công nghệ cao (như IC, máy móc) trong dữ liệu khai báo có cung cấp các yếu tố khóa như model cụ thể, số linh kiện, mô tả chức năng hay không. Nếu chỉ có mô tả mơ hồ (như 'linh kiện', 'không có model'), hãy xác định là rủi ro."
     },
     {
       "id": "R02_SENSITIVE_GOODS",
@@ -40,7 +41,8 @@
         "color": "red"
       },
       "rag_file": "rag_r02_sensitive_goods.txt",
-      "instruction": "请结合提供的【海关高级审查指导文件】，分析货物名称、成分和备注。严格筛查是否涉及'固体废物'（洋垃圾）、'濒危物种'或'两用物项'。如果货物特征命中了指导文件中的风险关键词，请判定为风险。"
+      "instruction": "请结合提供的【海关高级审查指导文件】，分析货物名称、成分和备注。严格筛查是否涉及'固体废物'（洋垃圾）、'濒危物种'或'两用物项'。如果货物特征命中了指导文件中的风险关键词，请判定为风险。",
+      "instruction_vi": "Kết hợp với【Tài liệu hướng dẫn kiểm tra hải quan cấp cao】được cung cấp, phân tích tên hàng hóa, thành phần và ghi chú. Sàng lọc nghiêm ngặt xem có liên quan đến 'chất thải rắn' (rác thải), 'loài nguy cấp' hoặc 'hàng hóa lưỡng dụng' hay không. Nếu đặc điểm hàng hóa trúng với từ khóa rủi ro trong tài liệu hướng dẫn, hãy xác định là rủi ro."
     },
     {
       "id": "R03_PRICE_LOGIC",
@@ -58,7 +60,8 @@
         "color": "gold"
       },
       "rag_file": "rag_r03_price_logic.txt",
-      "instruction": "请结合提供的【海关高级审查指导文件】，运用你的商业常识分析'单价'和'总价'。判断是否存在明显的低报价格（低于市场均价30%）或高报价格风险。注意：如果是旧货或残次品，需检查备注说明是否合理。"
+      "instruction": "请结合提供的【海关高级审查指导文件】，运用你的商业常识分析'单价'和'总价'。判断是否存在明显的低报价格（低于市场均价30%）或高报价格风险。注意：如果是旧货或残次品，需检查备注说明是否合理。",
+      "instruction_vi": "Kết hợp với【Tài liệu hướng dẫn kiểm tra hải quan cấp cao】được cung cấp, sử dụng hiểu biết thương mại để phân tích 'đơn giá' và 'tổng giá'. Xác định xem có tồn tại rủi ro khai báo giá thấp (thấp hơn giá thị trường trung bình 30%) hoặc khai báo giá cao bất thường hay không. Lưu ý: nếu là hàng cũ hoặc hàng lỗi, cần kiểm tra xem ghi chú có hợp lý hay không."
     },
     {
       "id": "R04_HS_CLASSIFICATION",
@@ -76,7 +79,8 @@
         "color": "purple"
       },
       "rag_file": "rag_r04_hs_classification.txt",
-      "instruction": "请结合提供的【海关高级审查指导文件】，分析'货物名称'、'实际用途'与申报的'HS编码'是否逻辑一致。重点识别是否存在将成品（高税率）伪报为零件（低税率）的'低归高走'风险。"
+      "instruction": "请结合提供的【海关高级审查指导文件】，分析'货物名称'、'实际用途'与申报的'HS编码'是否逻辑一致。重点识别是否存在将成品（高税率）伪报为零件（低税率）的'低归高走'风险。",
+      "instruction_vi": "Kết hợp với【Tài liệu hướng dẫn kiểm tra hải quan cấp cao】được cung cấp, phân tích xem 'Tên hàng hóa', 'Mục đích sử dụng thực tế' có logic nhất quán với 'Mã HS' đã khai báo hay không. Tập trung xác định xem có tồn tại rủi ro 'khai báo thấp để trốn thuế' (thấp quy cao tẩu) hay không: khai báo thành phẩm (thuế suất cao) là linh kiện (thuế suất thấp)."
     },
     {
       "id": "R05_DOC_MATCH",
@@ -94,7 +98,8 @@
         "color": "green"
       },
       "rag_file": "rag_r05_doc_match.txt",
-      "instruction": "请结合提供的【海关高级审查指导文件】，在数据中查找发票、装箱单等随附信息。比对'重量'、'金额'、'币制'是否与报关单申报完全一致。如果数据缺失导致无法比对，也应视为风险。"
+      "instruction": "请结合提供的【海关高级审查指导文件】，在数据中查找发票、装箱单等随附信息。比对'重量'、'金额'、'币制'是否与报关单申报完全一致。如果数据缺失导致无法比对，也应视为风险。",
+      "instruction_vi": "Kết hợp với【Tài liệu hướng dẫn kiểm tra hải quan cấp cao】được cung cấp, tìm kiếm thông tin đính kèm như hóa đơn, phiếu đóng gói trong dữ liệu. So sánh xem 'trọng lượng', 'số tiền', 'đồng tiền' có hoàn toàn nhất quán với khai báo trên tờ khai hải quan hay không. Nếu dữ liệu bị thiếu dẫn đến không thể so sánh, cũng nên coi là rủi ro."
     }
   ]
 }

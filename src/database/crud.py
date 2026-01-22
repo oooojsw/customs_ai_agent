@@ -222,7 +222,8 @@ class LLMConfigRepository:
             existing.api_version = config_data.get('api_version')
             existing.temperature = config_data.get('temperature', 0.3)
             existing.test_status = 'never'
-            existing.is_enabled = True  # 保存时启用该配置
+            # 使用前端传入的 is_enabled 值，而不是强制设为 True
+            existing.is_enabled = config_data.get('is_enabled', True)
             await self.db.commit()
             await self.db.refresh(existing)
             return existing
@@ -232,7 +233,7 @@ class LLMConfigRepository:
 
             new_config = UserLLMConfig(
                 provider=provider,
-                is_enabled=True,
+                is_enabled=config_data.get('is_enabled', True),  # 使用前端传入的 is_enabled 值
                 api_key=config_data['api_key'],
                 base_url=config_data['base_url'],
                 model_name=config_data['model_name'],
