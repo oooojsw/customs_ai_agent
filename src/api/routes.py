@@ -148,10 +148,21 @@ async def analyze_declaration_image(
         raise HTTPException(status_code=501, detail="OCR 模块缺失")
 
     content = await file.read()
-    extractor = ImageTextExtractor()
+
+    # 使用异步工厂方法创建实例（从数据库加载配置）
+    try:
+        from src.database.connection import AsyncSessionLocal
+        async with AsyncSessionLocal() as db:
+            extractor = await ImageTextExtractor.create_async(db)
+    except Exception as e:
+        print(f"[Warning] 数据库配置加载失败，使用 .env: {e}")
+        extractor = ImageTextExtractor()
+
     try:
         text, model = extractor.extract_text(content, file.content_type, language=language)
         return {"text": text, "model": model}
+    except NotDeclarationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -569,6 +580,11 @@ class LLMConfigRequest(BaseModel):
     temperature: Optional[float] = 0.3
     is_enabled: Optional[bool] = True  # 新增：接收前端开关状态
 
+    # ==================== 新增：图像识别配置 ====================
+    image_enabled: Optional[bool] = True  # 是否启用图像识别功能
+    image_model_name: Optional[str] = None  # 图像模型名称（如 gpt-4-vision-preview）
+    # ============================================================
+
 
 class LLMConfigResponse(BaseModel):
     is_enabled: bool
@@ -579,6 +595,11 @@ class LLMConfigResponse(BaseModel):
     test_status: str
     last_tested_at: Optional[str] = None
     api_key: Optional[str] = None  # 添加API Key字段用于前端填充
+
+    # ==================== 新增：图像识别配置 ====================
+    image_enabled: Optional[bool] = True
+    image_model_name: Optional[str] = None
+    # ============================================================
 
     model_config = {"exclude_unset": False}  # 确保所有字段都被序列化
 
@@ -604,7 +625,9 @@ async def get_llm_config():
                 model_name=settings.DEEPSEEK_MODEL,
                 temperature=0.3,
                 test_status="never",
-                last_tested_at=None
+                last_tested_at=None,
+                image_enabled=False,
+                image_model_name=None
             )
 
         return LLMConfigResponse(
@@ -615,7 +638,11 @@ async def get_llm_config():
             temperature=config.temperature,
             test_status=config.test_status,
             last_tested_at=config.last_tested_at.isoformat() if config.last_tested_at else None,
-            api_key=config.api_key  # 返回API Key用于前端填充
+            api_key=config.api_key,  # 返回API Key用于前端填充
+            # ==================== 新增：图像识别配置 ====================
+            image_enabled=getattr(config, 'image_enabled', False),
+            image_model_name=getattr(config, 'image_model_name', None)
+            # ============================================================
         )
 
 
@@ -905,32 +932,40 @@ async def get_available_models(
                     }
 
         # 3. 其他厂商：使用标准OpenAI兼容格式
-        provider_urls = {
-            "deepseek": "https://api.deepseek.com/models",
-            "openai": "https://api.openai.com/v1/models",
-            "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
-            "siliconflow": "https://api.siliconflow.cn/v1/models",
-            "custom": base_url  # 自定义服务商
-        }
-
-        if provider not in provider_urls:
-            return {
-                "status": "error",
-                "message": f"不支持的服务商: {provider}"
+        # 如果用户提供了 base_url，优先使用用户提供的
+        if base_url and base_url.strip():
+            url = f"{base_url.rstrip('/')}/models"
+        else:
+            # 使用默认的 provider_urls（根据官方文档配置）
+            provider_urls = {
+                "deepseek": "https://api.deepseek.com/v1/models",
+                "openai": "https://api.openai.com/v1/models",
+                "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                "siliconflow": "https://api.siliconflow.cn/v1/models",  # 国内主域名（文档第24行）
+                "zhipu": "https://open.bigmodel.cn/api/paas/v4/models",
             }
 
-        url = provider_urls[provider]
-        if not url:
-            return {
-                "status": "error",
-                "message": "自定义服务商需要提供base_url"
-            }
+            if provider not in provider_urls:
+                return {
+                    "status": "error",
+                    "message": f"不支持的服务商: {provider}"
+                }
+
+            url = provider_urls[provider]
+            if not url:
+                return {
+                    "status": "error",
+                    "message": "自定义服务商需要提供base_url"
+                }
 
         # 4. 标准OpenAI格式调用（Authorization: Bearer）
         async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
             response = await client.get(
                 url,
-                headers={"Authorization": f"Bearer {api_key}"}
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
             )
 
             if response.status_code == 200:
@@ -965,3 +1000,608 @@ async def get_available_models(
             "status": "error",
             "message": f"获取模型列表失败: {str(e)}"
         }
+
+
+# ==================== 图像识别配置 API ====================
+
+class ImageConfigRequest(BaseModel):
+    """图像配置请求模型"""
+    provider: str
+    api_key: str
+    base_url: Optional[str] = None
+    model_name: str
+    api_version: Optional[str] = None
+    endpoint: Optional[str] = None
+    temperature: Optional[float] = 0.1
+    max_tokens: Optional[int] = 16384
+    is_enabled: Optional[bool] = True
+    description: Optional[str] = None
+
+
+class ImageConfigResponse(BaseModel):
+    """图像配置响应模型"""
+    id: Optional[int] = None
+    provider: str
+    is_enabled: bool
+    api_key: Optional[str] = None  # ✅ 添加 API Key 字段
+    base_url: Optional[str] = None
+    model_name: str
+    api_version: Optional[str] = None
+    endpoint: Optional[str] = None
+    temperature: float
+    max_tokens: int
+    test_status: str
+    description: Optional[str] = None
+
+
+@router.get("/config/image")
+async def get_image_config():
+    """获取当前图像识别配置"""
+    if not BATCH_AVAILABLE:
+        # 降级：返回 .env 配置
+        from src.config.image_loader import image_config_loader
+        config = image_config_loader.load_from_env()
+
+        return ImageConfigResponse(
+            provider=config["provider"],
+            is_enabled=config["is_enabled"],
+            api_key=config.get("api_key"),  # ✅ 添加 API Key
+            base_url=config.get("base_url"),
+            model_name=config["model_name"],
+            api_version=config.get("api_version"),
+            endpoint=config.get("endpoint"),
+            temperature=config["temperature"],
+            max_tokens=config["max_tokens"],
+            test_status="never"
+        )
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.image_config_crud import ImageConfigRepository
+        repo = ImageConfigRepository(db)
+
+        # 优先获取启用的配置，如果没有则获取最新保存的配置
+        config = await repo.get_active_config()
+        if not config:
+            config = await repo.get_latest_config()
+
+        if config:
+            return ImageConfigResponse(
+                id=config.id,
+                provider=config.provider,
+                is_enabled=config.is_enabled,  # 告诉前端配置是否启用
+                api_key=config.api_key,  # ✅ 添加 API Key
+                base_url=config.base_url,
+                model_name=config.model_name,
+                api_version=config.api_version,
+                endpoint=config.endpoint,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+                test_status=config.test_status,
+                description=config.description
+            )
+        else:
+            # 没有数据库配置，返回 .env 默认配置
+            from src.config.image_loader import image_config_loader
+            env_config = image_config_loader.load_from_env()
+
+            return ImageConfigResponse(
+                provider=env_config["provider"],
+                is_enabled=False,
+                api_key=env_config.get("api_key"),  # ✅ 添加 API Key
+                base_url=env_config.get("base_url"),
+                model_name=env_config["model_name"],
+                api_version=env_config.get("api_version"),
+                endpoint=env_config.get("endpoint"),
+                temperature=env_config["temperature"],
+                max_tokens=env_config["max_tokens"],
+                test_status="never"
+            )
+
+
+@router.post("/config/image")
+async def save_image_config(config: ImageConfigRequest):
+    """保存图像识别配置"""
+    print(f"\n{'='*80}")
+    print(f"📝 [Image Config] 保存图像识别配置")
+    print(f"{'='*80}")
+    print(f"Provider: {config.provider}")
+    print(f"API Key: {config.api_key[:15]}...{config.api_key[-5:] if len(config.api_key) > 20 else '***'} (长度: {len(config.api_key)})")
+    print(f"Base URL: {config.base_url}")
+    print(f"Model: {config.model_name}")
+    print(f"Enabled: {config.is_enabled}")
+    print(f"{'='*80}\n")
+
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.image_config_crud import ImageConfigRepository
+        repo = ImageConfigRepository(db)
+
+        # 转换为字典
+        config_data = config.dict(exclude_unset=True)
+
+        # 保存配置
+        saved_config = await repo.create_or_update(config_data)
+
+        print(f"\n{'='*80}")
+        print(f"✅ [Image Config] 配置保存完成")
+        print(f"{'='*80}")
+        print(f"ID: {saved_config.id}")
+        print(f"Provider: {saved_config.provider}")
+        print(f"Model: {saved_config.model_name}")
+        print(f"Enabled: {saved_config.is_enabled}")
+        print(f"{'='*80}\n")
+
+        return {
+            "status": "success",
+            "message": "图像识别配置已保存",
+            "config": repo.to_dict(saved_config)
+        }
+
+
+@router.post("/config/image/test")
+async def test_image_connection(config: ImageConfigRequest):
+    """测试图像识别配置连接（真实API调用）"""
+    try:
+        import httpx
+
+        # 验证必要参数
+        if not config.api_key or len(config.api_key) < 10:
+            return {
+                "status": "error",
+                "message": "API Key 无效或太短"
+            }
+
+        if not config.model_name:
+            return {
+                "status": "error",
+                "message": "请指定模型名称"
+            }
+
+        # 根据provider真实测试API
+        if config.provider == "gemini":
+            # 测试 Gemini API
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.model_name}:generateContent?key={config.api_key}"
+            test_payload = {
+                "contents": [{
+                    "parts": [{"text": "Hi"}]
+                }]
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=test_payload)
+
+                if response.status_code == 200:
+                    return {
+                        "status": "success",
+                        "message": f"✅ Gemini 连接成功 ({config.model_name})"
+                    }
+                elif response.status_code == 429:
+                    return {
+                        "status": "error",
+                        "message": "❌ API 配额已用完或请求频率超限 (429)"
+                    }
+                elif response.status_code == 401:
+                    return {
+                        "status": "error",
+                        "message": "❌ API Key 无效 (401)"
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"❌ API 调用失败 (HTTP {response.status_code})"
+                    }
+
+        elif config.provider == "azure":
+            # 测试 Azure OpenAI API
+            if not config.endpoint:
+                return {
+                    "status": "error",
+                    "message": "❌ Azure Endpoint 未配置"
+                }
+
+            url = f"{config.endpoint}/openai/deployments/{config.model_name}/chat/completions?api-version={config.api_version}"
+            headers = {
+                "api-key": config.api_key,
+                "Content-Type": "application/json"
+            }
+            test_payload = {
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 10
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=test_payload, headers=headers)
+
+                if response.status_code == 200:
+                    return {
+                        "status": "success",
+                        "message": f"✅ Azure 连接成功 ({config.model_name})"
+                    }
+                elif response.status_code == 401:
+                    return {
+                        "status": "error",
+                        "message": "❌ API Key 无效 (401)"
+                    }
+                else:
+                    return {
+                        "status": "error",
+                        "message": f"❌ API 调用失败 (HTTP {response.status_code})"
+                    }
+
+        else:
+            return {
+                "status": "success",
+                "message": f"⚠️ {config.provider} 配置已保存（无法自动测试）"
+            }
+
+    except httpx.TimeoutException:
+        return {
+            "status": "error",
+            "message": "❌ 请求超时，请检查网络连接"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"❌ 测试失败: {str(e)}"
+        }
+
+
+@router.post("/config/image/reset")
+async def reset_image_config():
+    """重置为 .env 默认配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.image_config_crud import ImageConfigRepository
+        repo = ImageConfigRepository(db)
+        await repo.disable_all()
+
+        return {
+            "status": "success",
+            "message": "已重置为 .env 默认配置"
+        }
+
+
+@router.post("/config/image/reload")
+async def reload_image_config():
+    """热重载图像识别配置"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.image_config_crud import ImageConfigRepository
+        from src.config.image_loader import image_config_loader
+
+        repo = ImageConfigRepository(db)
+        config = await repo.get_active_config()
+
+        if config:
+            config_dict = repo.to_dict(config)
+            image_config_loader.set_config(config_dict)
+
+            return {
+                "status": "success",
+                "message": "配置已重载",
+                "config": {
+                    "provider": config_dict["provider"],
+                    "model": config_dict["model_name"],
+                    "enabled": config_dict["is_enabled"]
+                }
+            }
+        else:
+            # 使用 .env 配置
+            env_config = image_config_loader.load_from_env()
+            image_config_loader.set_config(env_config)
+
+            return {
+                "status": "success",
+                "message": "已重载 .env 默认配置",
+                "config": {
+                    "provider": env_config["provider"],
+                    "model": env_config["model_name"],
+                    "enabled": False
+                }
+            }
+
+
+@router.get("/config/image/provider/{provider}")
+async def get_image_provider_config(provider: str):
+    """获取指定服务商的图像配置（返回完整API Key用于前端填充）"""
+    if not BATCH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="数据库不可用")
+
+    from src.database.connection import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        from src.database.image_config_crud import ImageConfigRepository
+        repo = ImageConfigRepository(db)
+        config = await repo.get_by_provider(provider)
+
+        if config:
+            return {
+                "status": "success",
+                "config": {
+                    "provider": config.provider,
+                    "api_key": config.api_key,  # 返回完整API Key
+                    "base_url": config.base_url,
+                    "model_name": config.model_name,
+                    "endpoint": config.endpoint,
+                    "api_version": config.api_version,
+                    "has_api_key": bool(config.api_key)
+                }
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"未找到 {provider} 的配置"
+            }
+
+
+@router.get("/config/image/models")
+async def get_image_models(
+    provider: str,
+    api_key: str,
+    base_url: str = None,
+    api_version: str = None
+):
+    """
+    获取图像识别模型列表（复用LLM配置的相同逻辑）
+    参数与 LLM 配置完全相同
+    """
+    # ========== 详细调试信息 ==========
+    print("\n" + "="*80)
+    print(f"🔍 [图像模型列表] 开始获取 {provider} 的模型列表")
+    print("="*80)
+    print(f"📌 参数信息:")
+    print(f"  - provider: {provider}")
+    print(f"  - api_key: {api_key[:15]}...{api_key[-5:] if len(api_key) > 20 else '***'} (长度: {len(api_key)})")
+    print(f"  - base_url: {base_url}")
+    print(f"  - api_version: {api_version}")
+    print("="*80 + "\n")
+
+    try:
+        import httpx
+
+        # 智谱GLM：使用硬编码列表
+        if provider == "zhipu":
+            print(f"✅ [智谱GLM] 使用硬编码模型列表")
+            return {
+                "status": "success",
+                "models": ["glm-4v", "glm-4v-plus", "glm-4v-flash"],
+                "source": "builtin"
+            }
+
+        # Azure：需要endpoint和apiVersion
+        elif provider == "azure":
+            print(f"🔧 [Azure] 检查参数...")
+            if not base_url:
+                print(f"❌ [Azure] 缺少 base_url 参数")
+                return {
+                    "status": "error",
+                    "message": "Azure需要 base_url 参数"
+                }
+
+            url = f"{base_url}/openai/deployments?api-version={api_version}"
+            headers = {"api-key": api_key}
+
+            print(f"📡 [Azure] 发送请求:")
+            print(f"  - URL: {url}")
+            print(f"  - Headers: api-key={headers['api-key'][:10]}...***")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+
+                print(f"📥 [Azure] 响应状态: HTTP {response.status_code}")
+                print(f"📄 [Azure] 响应内容: {response.text[:500]}")
+
+                if response.status_code == 200:
+                    data = response.json()
+                    models = [item["id"] for item in data.get("data", [])]
+                    print(f"✅ [Azure] 成功获取 {len(models)} 个模型")
+                    return {
+                        "status": "success",
+                        "models": models,
+                        "source": "api"
+                    }
+                else:
+                    print(f"❌ [Azure] 请求失败")
+                    return {
+                        "status": "error",
+                        "message": f"API调用失败 (HTTP {response.status_code})\n响应: {response.text[:200]}"
+                    }
+
+        # 其他厂商：调用标准OpenAI兼容API
+        else:
+            # 没有API Key时的处理
+            if not api_key:
+                print(f"⚠️  [{provider.upper()}] 未提供API Key，使用预设模型列表")
+
+                # 返回预设列表（更新硅基流动图像模型，基于官方文档）
+                provider_presets = {
+                    "deepseek": ["deepseek-chat", "deepseek-coder", "deepseek-reasoner"],
+                    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+                    "qwen": ["qwen-turbo", "qwen-plus", "qwen-max", "qwen-max-longcontext", "qwen-vl-max", "qwen2.5-vl-7b-instruct", "qwen2.5-vl-72b-instruct"],
+                    "siliconflow": [
+                        # 硅基流动支持的视觉语言模型（基于官方文档）
+                        "Qwen/Qwen2-VL-7B-Instruct",
+                        "Qwen/Qwen2-VL-72B-Instruct",
+                        "Qwen/Qwen2.5-VL-7B-Instruct",
+                        "Qwen/Qwen2.5-VL-32B-Instruct",
+                        "Qwen/Qwen2.5-VL-72B-Instruct",
+                        "Qwen/Qwen3-VL-32B-Instruct",
+                        "OpenGVLab/InternVL2-Llama3-76B",
+                        "deepseek-ai/deepseek-vl-7b"
+                    ],
+                    "zhipu": ["glm-4v", "glm-4v-plus", "glm-4v-flash"]
+                }
+
+                if provider in provider_presets:
+                    models = provider_presets[provider]
+                    print(f"✅ [{provider.upper()}] 返回预设模型列表 ({len(models)} 个模型)")
+                    for i, model in enumerate(models, 1):
+                        print(f"   {i}. {model}")
+                    return {
+                        "status": "success",
+                        "models": models,
+                        "source": "builtin"
+                    }
+                else:
+                    print(f"❌ [{provider.upper()}] 无预设模型列表")
+                    return {
+                        "status": "error",
+                        "message": "请先输入 API Key"
+                    }
+
+            # 有API Key时的处理
+            print(f"🔑 [{provider.upper()}] 已提供API Key，尝试从API获取模型列表")
+
+            # 如果用户提供了 base_url，优先使用用户提供的
+            if base_url and base_url.strip():
+                url = f"{base_url.rstrip('/')}/models"
+                print(f"📝 使用用户提供的 base_url")
+            else:
+                # 使用默认的 provider_urls（根据官方文档配置）
+                provider_urls = {
+                    "deepseek": "https://api.deepseek.com/v1/models",
+                    "openai": "https://api.openai.com/v1/models",
+                    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/models",
+                    "siliconflow": "https://api.siliconflow.cn/v1/models",  # 国内主域名（文档第24行）
+                    "zhipu": "https://open.bigmodel.cn/api/paas/v4/models",
+                }
+
+                url = provider_urls.get(provider)
+                print(f"📝 使用预设的 provider_urls")
+                if not url:
+                    print(f"❌ 不支持的服务商: {provider}")
+                    return {
+                        "status": "error",
+                        "message": f"不支持的服务商: {provider}"
+                    }
+
+            # ========== 构建请求 ==========
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+
+            print("\n" + "─"*80)
+            print(f"📡 [{provider.upper()}] 发送HTTP请求")
+            print("─"*80)
+            print(f"请求方法: GET")
+            print(f"请求URL: {url}")
+            print(f"请求Headers:")
+            print(f"  - Authorization: Bearer {api_key[:15]}...{api_key[-5:] if len(api_key) > 20 else '***'}")
+            print(f"  - Content-Type: {headers['Content-Type']}")
+            print(f"  - 长度: {len(api_key)} 字符")
+            print("─"*80 + "\n")
+
+            # 4. 标准OpenAI格式调用
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=30.0) as client:
+                    response = await client.get(url, headers=headers)
+
+                    print("\n" + "─"*80)
+                    print(f"📥 [{provider.upper()}] 收到HTTP响应")
+                    print("─"*80)
+                    print(f"响应状态码: HTTP {response.status_code}")
+                    print(f"响应头:")
+                    for key, value in response.headers.items():
+                        if key.lower() in ['authorization', 'set-cookie']:
+                            continue  # 跳过敏感信息
+                        print(f"  - {key}: {value}")
+                    print(f"响应内容类型: {response.headers.get('content-type', 'unknown')}")
+                    print(f"响应内容长度: {len(response.content)} 字节")
+                    print("─"*80)
+
+                    # 打印响应内容（截取前500字符）
+                    response_text = response.text
+                    print(f"\n📄 响应内容 (前500字符):")
+                    print("─"*80)
+                    print(response_text[:500])
+                    if len(response_text) > 500:
+                        print(f"\n... (还有 {len(response_text) - 500} 字符)")
+                    print("─"*80 + "\n")
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        models = [item["id"] for item in data.get("data", [])]
+                        print(f"✅ [{provider.upper()}] 成功获取 {len(models)} 个模型")
+                        if len(models) <= 20:
+                            # 如果模型不多，全部打印
+                            for i, model in enumerate(models, 1):
+                                print(f"   {i}. {model}")
+                        else:
+                            # 如果模型太多，只打印前10个和后5个
+                            print(f"   前10个模型:")
+                            for i in range(10):
+                                print(f"   {i+1}. {models[i]}")
+                            print(f"   ... 还有 {len(models) - 15} 个模型")
+                            print(f"   最后5个模型:")
+                            for i in range(5):
+                                print(f"   {len(models)-4+i}. {models[-5+i]}")
+
+                        return {
+                            "status": "success",
+                            "models": models,
+                            "source": "api"
+                        }
+                    elif response.status_code == 401:
+                        print(f"❌ [{provider.upper()}] API Key 认证失败 (HTTP 401)")
+                        return {
+                            "status": "error",
+                            "message": "API Key 无效或已过期 (HTTP 401)"
+                        }
+                    elif response.status_code == 404:
+                        print(f"❌ [{provider.upper()}] API端点不存在 (HTTP 404)")
+                        print(f"可能的原因:")
+                        print(f"  1. Base URL配置错误: {base_url}")
+                        print(f"  2. 该服务商不支持模型列表API")
+                        print(f"  3. 服务商端点已变更")
+                        return {
+                            "status": "error",
+                            "message": f"API端点不存在 (HTTP 404)\n\n请检查：\n1. Base URL是否正确：{base_url}\n2. 该服务商是否支持模型列表API\n3. 查看控制台获取详细错误信息"
+                        }
+                    else:
+                        print(f"❌ [{provider.upper()}] API调用失败 (HTTP {response.status_code})")
+                        return {
+                            "status": "error",
+                            "message": f"API调用失败 (HTTP {response.status_code})\n\n响应内容:\n{response_text[:300]}\n\n请检查网络连接和API配置"
+                        }
+
+            except httpx.TimeoutException as e:
+                print(f"⏱️  [{provider.upper()}] 请求超时")
+                print(f"错误详情: {e}")
+                return {
+                    "status": "error",
+                    "message": "请求超时，请检查网络连接"
+                }
+            except Exception as e:
+                print(f"💥 [{provider.upper()}] 请求异常")
+                print(f"异常类型: {type(e).__name__}")
+                print(f"异常信息: {str(e)}")
+                import traceback
+                print(f"异常堆栈:\n{traceback.format_exc()}")
+                return {
+                    "status": "error",
+                    "message": f"请求异常: {type(e).__name__}: {str(e)}"
+                }
+    except Exception as e:
+        print(f"💥 [图像模型列表] 顶级异常捕获")
+        print(f"异常类型: {type(e).__name__}")
+        print(f"异常信息: {str(e)}")
+        import traceback
+        print(f"异常堆栈:\n{traceback.format_exc()}")
+        return {
+            "status": "error",
+            "message": f"获取模型列表失败: {type(e).__name__}: {str(e)}"
+        }
+
+
+
+

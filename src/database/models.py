@@ -159,3 +159,35 @@ class UserLLMConfig(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     last_tested_at = Column(DateTime, nullable=True)
     test_status = Column(String(20), default="never")  # never/success/failed
+
+# 8. 定义【图像识别模型配置表】（独立配置）
+class ImageModelConfig(Base):
+    __tablename__ = "image_model_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 基础配置
+    provider = Column(String(50), nullable=False, default="azure")  # 服务商：azure/gemini/custom
+    is_enabled = Column(Boolean, default=False)  # 是否启用图像识别
+
+    # API 配置
+    api_key = Column(String(255), nullable=False)
+    base_url = Column(String(255), nullable=True)  # Gemini不需要，但Azure/custom需要
+    model_name = Column(String(100), nullable=False)  # 如 gpt-4-vision, gemini-2.0-flash
+
+    # Azure 特有配置
+    api_version = Column(String(50), nullable=True)
+    endpoint = Column(String(255), nullable=True)  # Azure endpoint
+
+    # 模型参数
+    temperature = Column(Float, default=0.1)
+    max_tokens = Column(Integer, default=16384)
+
+    # 元数据
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    last_tested_at = Column(DateTime, nullable=True)
+    test_status = Column(String(20), default="never")  # never/success/failed
+
+    # 备注
+    description = Column(String(255), nullable=True)

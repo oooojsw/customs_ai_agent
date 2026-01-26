@@ -202,3 +202,21 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 .markdown-report ul { list-style: disc; padding-left: 1.5em; margin-bottom: 1em; color: #cbd5e1; }
 .markdown-report strong { color: #facc15; }
 .markdown-report blockquote { border-left: 3px solid #64748b; padding-left: 10px; color: #94a3b8; font-style: italic; }
+
+/* ================== 设置模态框选项卡样式 ================== */
+/* 选项卡按钮基础样式 */
+.settings-tab {
+    position: relative;
+    transition: all 0.2s ease;
+}
+
+/* 活动选项卡 */
+.settings-tab.active {
+    color: #22d3ee !important; /* cyan-400 */
+    border-bottom-color: #22d3ee !important;
+}
+
+/* 活动选项卡悬停效果 */
+.settings-tab.active:hover {
+    color: #67e8f9 !important; /* cyan-300 */
+}

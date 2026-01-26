@@ -3,23 +3,51 @@
 const PROVIDER_PRESETS = {
     deepseek: {
         base_url: 'https://api.deepseek.com',
-        models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner']
+        models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+        image_models: []  // DeepSeek暂无视觉模型
     },
     openai: {
         base_url: 'https://api.openai.com/v1',
-        models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo']
+        models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+        image_models: [  // OpenAI视觉模型
+            'gpt-4o',  // GPT-4o支持图像
+            'gpt-4-turbo',  // GPT-4 Turbo支持图像
+            'chatgpt-4o-latest'  // 最新版本
+        ]
     },
     qwen: {
         base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext']
+        models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext'],
+        image_models: [  // 通义千问视觉模型
+            'qwen-vl-max',
+            'qwen-vl-plus',
+            'qwen2.5-vl-7b-instruct',
+            'qwen2.5-vl-32b-instruct',
+            'qwen2.5-vl-72b-instruct'
+        ]
     },
     zhipu: {
         base_url: 'https://open.bigmodel.cn/api/paas/v4/',
-        models: ['glm-4.7', 'glm-4-turbo', 'glm-4-plus', 'glm-4-air', 'glm-4-flash']
+        models: ['glm-4.7', 'glm-4-turbo', 'glm-4-plus', 'glm-4-air', 'glm-4-flash'],
+        image_models: [  // 智谱视觉模型
+            'glm-4v',
+            'glm-4v-plus',
+            'glm-4v-flash'
+        ]
     },
     siliconflow: {
         base_url: 'https://api.siliconflow.cn/v1',
-        models: []  // 需要通过API获取
+        models: [],  // LLM模型需要通过API获取
+        image_models: [  // 图像模型预设（用于无API Key时显示）
+            "Qwen/Qwen2-VL-7B-Instruct",
+            "Qwen/Qwen2-VL-72B-Instruct",
+            "Qwen/Qwen2.5-VL-7B-Instruct",
+            "Qwen/Qwen2.5-VL-32B-Instruct",
+            "Qwen/Qwen2.5-VL-72B-Instruct",
+            "Qwen/Qwen3-VL-32B-Instruct",
+            "OpenGVLab/InternVL2-Llama3-76B",
+            "deepseek-ai/deepseek-vl-7b"
+        ]
     },
     azure: {
         base_url: '',  // 用户需要自己输入
@@ -387,10 +415,12 @@ function toggleManualInput() {
 }
 
 function getModelName() {
-    const useManual = !document.getElementById('llmModelNameInput').classList.contains('hidden');
-    return useManual
-        ? document.getElementById('llmModelNameInput').value
-        : document.getElementById('llmModelName').value;
+    const element = document.getElementById('llmModelName');
+    if (!element) {
+        console.error('[LLM Config] llmModelName element not found');
+        return 'deepseek-chat'; // 默认值
+    }
+    return element.value || 'deepseek-chat';
 }
 
 async function testLLMConnection() {

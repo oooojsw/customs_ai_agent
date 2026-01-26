@@ -2,7 +2,7 @@ import base64
 import json
 import requests
 from typing import Tuple, Optional, Dict
-from openai import AzureOpenAI, OpenAI
+from openai import AzureOpenAI
 from fastapi import UploadFile
 
 from src.config.loader import settings
@@ -30,12 +30,9 @@ class ImageTextExtractor:
         self._max_tokens = self._config.get('max_tokens', 16384)
         self._endpoint = self._config.get('endpoint')
         self._api_version = self._config.get('api_version', settings.AZURE_OAI_VERSION)
-        self._base_url = self._config.get('base_url')
 
-        # 初始化客户端
+        # 初始化 Azure OpenAI 客户端（如果是 Azure provider）
         self._azure_client = None
-        self._openai_client = None
-
         if self._provider == "azure" and all([self._api_key, self._endpoint]):
             try:
                 self._azure_client = AzureOpenAI(
@@ -43,31 +40,8 @@ class ImageTextExtractor:
                     api_version=self._api_version,
                     azure_endpoint=self._endpoint
                 )
-                print(f"[ImageExtractor] Azure OpenAI 客户端初始化成功")
             except Exception as e:
                 print(f"[Warning] Azure OpenAI 客户端初始化失败: {e}")
-
-        elif self._provider in ["deepseek", "openai", "qwen", "zhipu", "siliconflow", "custom"]:
-            if self._api_key:
-                try:
-                    self._openai_client = OpenAI(
-                        api_key=self._api_key,
-                        base_url=self._base_url
-                    )
-                    print(f"[ImageExtractor] {self._provider} OpenAI 兼容客户端初始化成功")
-                except Exception as e:
-                    print(f"[Warning] {self._provider} 客户端初始化失败: {e}")
-
-        # Gemini 的特殊属性
-        if self._provider == "gemini":
-            self._gemini_model = self._model or "gemini-2.0-flash-exp"
-        else:
-            # 保留 _gemini_model 用于内容校验
-            self._gemini_model = "gemini-2.0-flash-exp"
-
-        # Azure 的部署名称
-        if self._provider == "azure":
-            self._azure_deployment = self._model
 
     @staticmethod
     def _load_config() -> Dict:
@@ -79,14 +53,12 @@ class ImageTextExtractor:
 
             # 如果用户配置已启用，使用用户配置
             if config.get('is_enabled', False):
-                provider = config['provider']
-                model = config['model_name']
-                print(f"[ImageExtractor] ✓ 使用用户配置: {provider}/{model}")
+                print(f"[ImageExtractor] 使用用户配置: {config['provider']}/{config['model_name']}")
                 return {
-                    'provider': provider,
+                    'provider': config['provider'],
                     'api_key': config['api_key'],
                     'base_url': config.get('base_url'),
-                    'model': model,
+                    'model': config['model_name'],
                     'temperature': config.get('temperature', 0.1),
                     'max_tokens': config.get('max_tokens', 16384),
                     'endpoint': config.get('endpoint'),
@@ -112,7 +84,7 @@ class ImageTextExtractor:
             return {
                 'provider': 'gemini',
                 'api_key': '',
-                'model': 'gemini-2.0-flash-exp',
+                'model': 'gemini-2.0-flash',
                 'temperature': 0.1,
                 'max_tokens': 16384
             }
@@ -142,86 +114,63 @@ class ImageTextExtractor:
     def extract_text(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> Tuple[str, str]:
         """
         核心函数：从图片中提取报关单字段
-        根据配置的 provider 调用对应的图像识别 API
+        1. 校验图片是否为报关单
+        2. 尝试用 Gemini 提取
+        3. 如果 Gemini 失败，自动切换到 Azure OpenAI
         """
-        print(f"[DEBUG] ========== 开始图片识别 ==========")
-        print(f"[DEBUG] Provider: {self._provider}")
-        print(f"[DEBUG] Model: {self._model}")
-        print(f"[DEBUG] Language: {language}, Size: {len(image_bytes)} bytes")
-        print(f"[DEBUG] Config Source: {self._config.get('source', 'unknown')}")
+        print(f"[DEBUG] 开始图片识别，语言设置: {language}, 图片类型: {mime_type}, 大小: {len(image_bytes)} bytes")
 
-        # 1. 内容校验（使用 Gemini，因为最快）
+        # 1. 内容校验
         try:
-            print("[DEBUG] 步骤 1: 内容校验...")
             is_declaration, reason = self._validate_image_content(image_bytes, mime_type, language)
             if not is_declaration:
                 raise NotDeclarationError(f"图片似乎不是报关单，因为：{reason}")
-            print("[DEBUG] ✓ 内容校验通过")
         except Exception as e:
-            print(f"[WARN] 内容校验失败: {e}，跳过校验继续识别...")
+            print(f"[ERROR] 图片内容校验失败: {type(e).__name__}: {e}")
+            # 如果校验失败（网络问题等），继续尝试识别，不要直接中断
+            print("[WARN] 跳过校验，直接尝试识别...")
 
-        # 2. 根据 provider 调用对应 API
-        text = None
-        model_used = self._model
-        primary_error = None
-
+        # 2. 主模型 (Gemini)
         try:
-            print(f"[INFO] 步骤 2: 使用 {self._provider} 进行识别...")
-
-            if self._provider == "gemini":
-                text = self._call_gemini_vision(image_bytes, mime_type, language)
-                model_used = self._gemini_model
-
-            elif self._provider == "azure":
-                if not self._azure_client:
-                    raise RuntimeError("Azure OpenAI 客户端未初始化，请检查配置")
-                text = self._call_azure_openai_vision(image_bytes, mime_type, language)
-                model_used = self._azure_deployment
-
-            elif self._provider in ["deepseek", "openai", "qwen", "zhipu", "siliconflow", "custom"]:
-                if not self._openai_client:
-                    raise RuntimeError(f"{self._provider} 客户端未初始化，请检查 API Key 和 Base URL")
-                text = self._call_openai_compatible_vision(image_bytes, mime_type, language)
-                model_used = self._model
-
-            else:
-                raise ValueError(f"不支持的 provider: {self._provider}")
-
-            # 格式化检查
-            print("[DEBUG] 步骤 3: 格式化检查...")
+            print("INFO: 正在尝试使用 Gemini-Flash 模型进行图片识别...")
+            text = self._call_gemini_vision(image_bytes, mime_type, language)
+            # 格式化检查与修正
             text = self._ensure_multi_item_format(text, language)
-
-            print(f"[SUCCESS] ✓ 识别成功！")
-            print(f"[SUCCESS] 使用模型: {model_used}")
-            print(f"[DEBUG] ========== 识别完成 ==========\n")
-            return text, model_used
-
+            print("INFO: Gemini-Flash 识别成功。")
+            return text, self._gemini_model
         except Exception as e:
-            primary_error = e
             error_type = type(e).__name__
             error_msg = str(e)
-            print(f"[ERROR] {self._provider} 识别失败: {error_type}: {error_msg}")
+            print(f"[Warning] Gemini-Flash 识别失败: {error_type}: {error_msg}")
+            import traceback
+            print(f"[DEBUG] Gemini 详细错误堆栈:\n{traceback.format_exc()}")
 
-            # 降级策略：尝试备用模型
-            if self._azure_client and self._provider != "azure":
-                print(f"[INFO] 尝试降级到 Azure OpenAI...")
+            # 3. 备用模型 (Azure OpenAI)
+            if self._azure_client:
+                print("INFO: 已切换到 Azure OpenAI 模型进行重试...")
                 try:
                     text = self._call_azure_openai_vision(image_bytes, mime_type, language)
-                    model_used = f"Azure-{self._azure_deployment}"
+                    # 格式化检查与修正 (用 Gemini-Text)
                     text = self._ensure_multi_item_format(text, language)
-                    print(f"[SUCCESS] ✓ Azure OpenAI 降级成功！")
-                    print(f"[DEBUG] ========== 识别完成 ==========\n")
-                    return text, model_used
+                    print("INFO: Azure OpenAI 识别成功。")
+                    return text, self._azure_deployment
                 except Exception as az_e:
-                    print(f"[ERROR] Azure OpenAI 降级也失败: {az_e}")
+                    az_error_type = type(az_e).__name__
+                    az_error_msg = str(az_e)
+                    print(f"[Error] Azure OpenAI 备用模型也识别失败: {az_error_type}: {az_error_msg}")
+                    print(f"[DEBUG] Azure 详细错误堆栈:\n{traceback.format_exc()}")
+                    raise RuntimeError(
+                        f"主模型和备用模型均无法处理该图片\n"
+                        f"Gemini错误: {error_type}: {error_msg}\n"
+                        f"Azure错误: {az_error_type}: {az_error_msg}"
+                    ) from az_e
+            else:
+                print("[Error] 未配置 Azure OpenAI 备用模型，无法重试。")
+                raise RuntimeError(
+                    f"Gemini 图片识别失败，且未配置备用模型\n"
+                    f"错误详情: {error_type}: {error_msg}"
+                ) from e
 
-            # 所有尝试都失败
-            print(f"[FATAL] 所有模型均无法处理该图片")
-            raise RuntimeError(
-                f"图片识别失败\n"
-                f"主模型 ({self._provider}/{self._model}): {error_type}: {error_msg}\n"
-                f"备用模型: Azure OpenAI {'未配置' if not self._azure_client else '也失败了'}"
-            ) from primary_error
 
     def _validate_image_content(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> Tuple[bool, str]:
         """
@@ -236,10 +185,10 @@ class ImageTextExtractor:
             prompt = f'{language_instruction}\n这张图片是海关货物报关单吗？请直接回答"是"或"否"。如果是"否"，请用一句话简单说明图片内容（例如：这是一张风景照）。'
 
         try:
-            # 使用 Gemini Flash 快速校验（始终使用 Gemini，因为最快）
+            # 直接调用原始 Gemini 接口，使用配置中的API Key
             api_url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"gemini-2.0-flash-exp:generateContent?key={self._api_key if self._provider == 'gemini' else settings.GOOGLE_API_KEY}"
+                f"{self._gemini_model}:generateContent?key={self._api_key}"
             )
             image_b64 = base64.b64encode(image_bytes).decode("ascii")
             payload = {
@@ -256,51 +205,25 @@ class ImageTextExtractor:
 
             # 根据语言设置解析响应
             if language == "vi":
+                # 越南语：Có / Không
                 if result_text.startswith("Có") or result_text.startswith("có"):
                     return True, "Là tờ khai hải quan"
                 else:
+                    # 提取"Không"之后的理由
                     reason = result_text.replace("Không", "").replace("không", "").strip("，。,. ")
                     return False, reason if reason else "Nội dung không phù hợp"
             else:
+                # 中文：是 / 否
                 if result_text.startswith("是"):
                     return True, "是报关单"
                 else:
+                    # 提取"否"之后的理由
                     reason = result_text.replace("否", "").strip("，。,. ")
                     return False, reason if reason else "内容不符"
         except Exception as e:
-            print(f"[Warning] 图片内容校验步骤失败: {e}，默认通过")
+            print(f"[Warning] 警告: 图片内容校验步骤失败: {e}。为保证流程继续，暂时跳过校验。")
+            # 在校验失败时默认通过，以避免网络问题导致整个流程中断
             return True, "校验异常，已跳过"
-
-    def _call_gemini_vision(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> str:
-        """调用 Gemini Vision API"""
-        api_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self._gemini_model}:generateContent?key={self._api_key}"
-        )
-        prompt = self._build_prompt(language)
-        image_b64 = base64.b64encode(image_bytes).decode("ascii")
-
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": mime_type, "data": image_b64}}
-                ]
-            }],
-            "generationConfig": {
-                "temperature": self._temperature,
-                "maxOutputTokens": self._max_tokens
-            }
-        }
-
-        print(f"[DEBUG] 调用 Gemini API: {self._gemini_model}")
-        response = requests.post(api_url, json=payload, timeout=60, verify=False)
-        response.raise_for_status()
-        data = response.json()
-        try:
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except (KeyError, IndexError) as e:
-            raise RuntimeError(f"Gemini 响应格式解析错误: {json.dumps(data)}") from e
 
     def _call_azure_openai_vision(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> str:
         """调用 Azure OpenAI GPT-4o 模型进行图片识别"""
@@ -309,9 +232,8 @@ class ImageTextExtractor:
 
         image_b64 = base64.b64encode(image_bytes).decode('ascii')
         image_url = f"data:{mime_type};base64,{image_b64}"
-        prompt = self._build_prompt(language)
 
-        print(f"[DEBUG] 调用 Azure OpenAI API: {self._azure_deployment}")
+        prompt = self._build_prompt(language)  # 传入 language 参数
 
         response = self._azure_client.chat.completions.create(
             model=self._azure_deployment,
@@ -324,67 +246,15 @@ class ImageTextExtractor:
                     ],
                 }
             ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature
+            max_tokens=8192,  # 从 2048 提高到 8192 以支持越南语输出
+            temperature=0.1
         )
         return response.choices[0].message.content.strip()
-
-    def _call_openai_compatible_vision(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> str:
-        """
-        调用 OpenAI 兼容的 Vision API
-        支持: deepseek, openai, qwen, zhipu, siliconflow, custom
-        """
-        if not self._openai_client:
-            raise RuntimeError(f"{self._provider} 客户端未初始化")
-
-        image_b64 = base64.b64encode(image_bytes).decode('ascii')
-        image_url = f"data:{mime_type};base64,{image_b64}"
-        prompt = self._build_prompt(language)
-
-        print(f"[DEBUG] 调用 {self._provider} API: {self._model}")
-        print(f"[DEBUG] Base URL: {self._base_url}")
-
-        response = self._openai_client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": image_url}}
-                    ]
-                }
-            ],
-            max_tokens=self._max_tokens,
-            temperature=self._temperature
-        )
-        return response.choices[0].message.content.strip()
-
-    def _call_gemini_text(self, prompt: str, language: str = "zh") -> str:
-        """调用 Gemini Text API"""
-        api_url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self._gemini_model}:generateContent?key={self._api_key if self._provider == 'gemini' else settings.GOOGLE_API_KEY}"
-        )
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": self._temperature,
-                "maxOutputTokens": self._max_tokens
-            }
-        }
-        response = requests.post(api_url, json=payload, timeout=60, verify=False)
-        response.raise_for_status()
-        data = response.json()
-        try:
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except (KeyError, IndexError) as e:
-            raise RuntimeError(f"Gemini 文本响应解析错误: {json.dumps(data)}") from e
 
     def _build_prompt(self, language: str = "zh") -> str:
-        """构建 OCR 提示词"""
         language_instruction = self._get_language_instruction(language)
 
+        # 根据语言设置字段名
         if language == "vi":
             return (
                 f"{language_instruction}\n\n"
@@ -451,7 +321,6 @@ class ImageTextExtractor:
             )
 
     def _build_reformat_prompt(self, raw_text: str, language: str = "zh") -> str:
-        """构建重新格式化的提示词"""
         language_instruction = self._get_language_instruction(language)
 
         if language == "vi":
@@ -507,13 +376,65 @@ class ImageTextExtractor:
             )
 
     def _ensure_multi_item_format(self, text: str, language: str = "zh") -> str:
-        """确保输出格式符合多商品要求"""
+        # 检查是否符合格式（中文或越南语）
         format_markers = ["商品清单", "商品1", "Danh mục hàng hóa", "Hàng hóa 1"]
         if any(marker in text for marker in format_markers):
             return text
         print("INFO: 识别结果格式不完全符合要求，正在尝试自动修正...")
         prompt = self._build_reformat_prompt(text, language)
+        # 统一使用 Gemini-Text 进行修正，成本低、速度快
         return self._call_gemini_text(prompt, language)
+
+    def _call_gemini_vision(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> str:
+        """调用 Gemini Vision API"""
+        api_url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:generateContent?key={self._api_key}"
+        )
+        prompt = self._build_prompt(language)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": image_b64}}
+                ]
+            }],
+            "generationConfig": {
+                "temperature": self._temperature,
+                "maxOutputTokens": self._max_tokens
+            }
+        }
+
+        response = requests.post(api_url, json=payload, timeout=60, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError) as e:
+            raise RuntimeError(f"Gemini 响应格式解析错误: {json.dumps(data)}") from e
+
+    def _call_gemini_text(self, prompt: str, language: str = "zh") -> str:
+        """调用 Gemini Text API"""
+        api_url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:generateContent?key={self._api_key}"
+        )
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": self._temperature,
+                "maxOutputTokens": self._max_tokens
+            }
+        }
+        response = requests.post(api_url, json=payload, timeout=60, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError) as e:
+            raise RuntimeError(f"Gemini 文本响应解析错误: {json.dumps(data)}") from e
 
     def _get_language_instruction(self, language: str) -> str:
         """生成语言输出指令"""

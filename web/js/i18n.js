@@ -125,6 +125,10 @@ const translations = {
         config_applied: '配置已应用',
         test_success: '测试成功',
         test_failed: '测试失败',
+
+        // 图像配置
+        image_config_title: '图像识别模型配置',
+        use_custom_image_config: '使用自定义配置',
     },
 
     vi: {
@@ -252,6 +256,10 @@ const translations = {
         config_applied: 'Đã áp dụng cấu hình',
         test_success: 'Kiểm tra thành công',
         test_failed: 'Kiểm tra thất bại',
+
+        // 图像配置
+        image_config_title: 'Cấu hình mô hình nhận dạng hình ảnh',
+        use_custom_image_config: 'Sử dụng cấu hình tùy chỉnh',
     }
 };
 
@@ -273,18 +281,21 @@ function setLanguage(lang) {
     const viBtn = document.getElementById('lang-vi');
 
     if (lang === 'zh') {
-        zhBtn.className = 'flex-1 py-2 bg-cyan-600 text-white rounded text-sm font-bold transition';
-        viBtn.className = 'flex-1 py-2 bg-slate-700 text-slate-300 rounded text-sm font-bold hover:bg-slate-600 transition';
+        zhBtn.className = 'p-6 bg-gradient-to-br from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg shadow-lg transition transform hover:scale-105 ring-2 ring-cyan-400';
+        viBtn.className = 'p-6 bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white rounded-lg shadow-lg transition transform hover:scale-105';
     } else {
-        zhBtn.className = 'flex-1 py-2 bg-slate-700 text-slate-300 rounded text-sm font-bold hover:bg-slate-600 transition';
-        viBtn.className = 'flex-1 py-2 bg-cyan-600 text-white rounded text-sm font-bold transition';
+        zhBtn.className = 'p-6 bg-gradient-to-br from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg shadow-lg transition transform hover:scale-105';
+        viBtn.className = 'p-6 bg-gradient-to-br from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white rounded-lg shadow-lg transition transform hover:scale-105 ring-2 ring-purple-400';
+    }
+
+    // 更新当前语言显示
+    const display = document.getElementById('currentLanguageDisplay');
+    if (display) {
+        display.textContent = lang === 'zh' ? '简体中文' : 'Tiếng Việt (Vietnamese)';
     }
 
     // 更新页面所有带 data-i18n 的元素
     updatePageLanguage();
-
-    // 自动关闭弹窗
-    document.getElementById('settingsModal').classList.add('hidden');
 }
 
 // 更新页面语言
@@ -315,6 +326,37 @@ function toggleSettings() {
     const modal = document.getElementById('settingsModal');
     modal.classList.toggle('hidden');
 }
+
+// ==================== 选项卡切换功能 ====================
+/**
+ * 切换设置模态框中的选项卡
+ * @param {string} tabName - 选项卡名称 (api/language/index/other)
+ */
+function switchTab(tabName) {
+    // 1. 隐藏所有选项卡内容
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.add('hidden');
+    });
+
+    // 2. 显示选中的选项卡内容
+    const targetContent = document.getElementById(`tab-content-${tabName}`);
+    if (targetContent) {
+        targetContent.classList.remove('hidden');
+    }
+
+    // 3. 更新选项卡按钮样式
+    document.querySelectorAll('.settings-tab').forEach(tab => {
+        tab.classList.remove('active', 'text-cyan-400', 'border-cyan-400');
+        tab.classList.add('text-slate-400', 'border-transparent');
+    });
+
+    const activeTab = document.getElementById(`tab-${tabName}`);
+    if (activeTab) {
+        activeTab.classList.remove('text-slate-400', 'border-transparent');
+        activeTab.classList.add('active', 'text-cyan-400', 'border-cyan-400');
+    }
+}
+// ============================================================
 
 // 页面加载时初始化语言
 document.addEventListener('DOMContentLoaded', () => {

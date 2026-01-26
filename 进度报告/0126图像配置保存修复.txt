@@ -1,0 +1,195 @@
+# 图像配置 API Key 保存失败问题修复报告
+
+## 问题概述
+
+**用户反馈**：在图像识别设置中填写 API Key 并保存后，刷新页面 API Key 丢失，字段变空。
+
+## 根本原因分析
+
+### 核心问题：CRUD 更新逻辑缺陷
+
+**问题位置**：`src/database/image_config_crud.py` 的 `create_or_update()` 方法
+
+**原始逻辑**：
+```python
+async def create_or_update(self, config_data: Dict[str, Any]):
+    # 只查找已启用的配置
+    existing = await self.get_active_config()  # ❌ 问题在这里
+
+    if existing:
+        # 更新已启用的配置
+        for key, value in config_data.items():
+            setattr(existing, key, value)
+        # ...
+    else:
+        # 创建新配置
+        new_config = ImageModelConfig(**config_data)
+        # ...
+```
+
+**问题场景**：
+1. 用户之前保存过 Azure 配置（已启用，is_enabled=true）
+2. 现在保存硅基流动配置（不管是否启用）
+3. `get_active_config()` 返回旧的 Azure 配置
+4. 新的硅基流动配置被写入到 Azure 记录中（provider 仍然是 azure）
+5. 刷新后，由于 provider 不匹配，配置无法正确加载
+
+### 次要问题：缺少调试日志
+
+- 无法看到实际保存的数据
+- 无法确认数据库操作是否成功
+- 用户反馈问题后难以诊断
+
+## 修复方案
+
+### 方案：基于 Provider 的配置管理
+
+**核心思路**：
+- 每个 provider 只保存一条配置记录
+- 通过 `provider` 字段查找要更新的配置
+- 通过 `is_enabled` 字段控制使用哪个服务商
+
+**优点**：
+- 符合用户的使用习惯（每个服务商独立配置）
+- 避免配置相互覆盖
+- 可以在多个服务商之间切换
+
+## 实施步骤
+
+### 步骤 1：修改 CRUD 逻辑
+
+**文件**：`src/database/image_config_crud.py`
+
+**修改 `create_or_update()` 方法**：
+
+```python
+async def create_or_update(self, config_data: Dict[str, Any]) -> ImageModelConfig:
+    """创建或更新指定provider的配置"""
+    provider = config_data.get('provider')
+
+    # 根据 provider 查找已存在的配置
+    stmt = select(ImageModelConfig).where(
+        ImageModelConfig.provider == provider
+    ).limit(1)
+    result = await self.db.execute(stmt)
+    existing = result.scalar_one_or_none()
+
+    # 添加调试日志
+    print(f"[ImageConfig CRUD] 操作: {'更新' if existing else '创建'}")
+    print(f"[ImageConfig CRUD] Provider: {provider}")
+    print(f"[ImageConfig CRUD] Existing: {existing.id if existing else None}")
+    print(f"[ImageConfig CRUD] New data: {config_data}")
+
+    if existing:
+        # 更新现有配置
+        for key, value in config_data.items():
+            if hasattr(existing, key):
+                setattr(existing, key, value)
+        existing.updated_at = datetime.now()
+        existing.test_status = "never"
+        await self.db.commit()
+        await self.db.refresh(existing)
+        print(f"[ImageConfig CRUD] ✅ 更新成功: ID={existing.id}")
+        return existing
+    else:
+        # 创建新配置
+        new_config = ImageModelConfig(**config_data)
+        self.db.add(new_config)
+        await self.db.commit()
+        await self.db.refresh(new_config)
+        print(f"[ImageConfig CRUD] ✅ 创建成功: ID={new_config.id}")
+        return new_config
+```
+
+### 步骤 2：添加后端调试日志
+
+**文件**：`src/api/routes.py`
+
+**修改 `save_image_config()` 函数**：添加保存前后的详细日志输出
+
+### 步骤 3：添加前端调试日志
+
+**文件**：`web/js/image_config.js`
+
+**修改 `saveImageConfig()` 函数**：添加配置保存前的 console.log 输出
+
+## 测试验证
+
+### 测试场景 1：首次保存硅基流动配置
+
+**API 请求**：
+- Provider: siliconflow
+- API Key: sk-test-key-12345
+- Model: Qwen/Qwen2.5-VL-7B-Instruct
+
+**服务器日志**：
+```
+[ImageConfig CRUD] 操作: 更新
+[ImageConfig CRUD] Provider: siliconflow
+[ImageConfig CRUD] Existing: 4
+[ImageConfig CRUD] ✅ 更新成功: ID=4
+```
+
+**验证**：✅ 按 F5 刷新页面，API Key 字段正确填充
+
+### 测试场景 2：切换服务商保存
+
+**API 请求 1（Azure）**：
+- Provider: azure
+- API Key: azure-key-123
+- 返回 ID: 1
+
+**API 请求 2（SiliconFlow）**：
+- Provider: siliconflow
+- API Key: sk-updated-key-67890
+- 返回 ID: 4
+
+**验证**：✅ 两个服务商的配置独立存储，互不干扰
+
+### 测试场景 3：刷新页面配置保留
+
+**操作**：当前服务商是硅基流动，按 F5 刷新页面
+
+**验证**：✅ 配置正确加载，API Key 字段正确填充
+
+## 修改文件清单
+
+1. **src/database/image_config_crud.py**
+   - 修改 `create_or_update()` 方法
+   - 改为基于 `provider` 查找配置
+   - 添加详细的调试日志
+
+2. **src/api/routes.py**
+   - 修改 `save_image_config()` 函数
+   - 添加保存前后的日志输出
+
+3. **web/js/image_config.js**
+   - 修改 `saveImageConfig()` 函数
+   - 添加配置保存前的日志输出
+
+## 测试结果
+
+✅ 每个服务商独立保存配置
+✅ SiliconFlow 更新 ID=4，Azure 更新 ID=1
+✅ 配置不会相互覆盖
+✅ 调试日志完整清晰，便于排查问题
+✅ 刷新页面后配置正确加载
+
+## 端口清理
+
+✅ 测试前清理端口 8000（PID 20576）
+✅ 测试后清理端口 8000（PID 34036）
+
+## 结论
+
+图像配置 API Key 保存失败问题已完全修复 ✅
+
+- 配置管理逻辑从基于 `is_enabled` 改为基于 `provider` ✅
+- 不同服务商的配置互不干扰，符合用户使用习惯 ✅
+- 添加了详细的调试日志，便于后续排查问题 ✅
+- 通过测试验证，所有场景均正常工作 ✅
+
+---
+**修复日期**：2026-01-26
+**测试状态**：✅ 通过
+**修改文件数**：3 个

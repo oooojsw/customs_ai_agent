@@ -64,6 +64,32 @@ async def lifespan(app: FastAPI):
             'source': 'env'
         }
 
+    # 加载用户图像识别配置
+    image_config = None
+    try:
+        from src.database.connection import AsyncSessionLocal
+        from src.database.image_config_crud import ImageConfigRepository
+        from src.config.image_loader import image_config_loader
+
+        async with AsyncSessionLocal() as db:
+            repo = ImageConfigRepository(db)
+            db_config = await repo.get_active_config()
+
+            if db_config and db_config.is_enabled:
+                image_config = repo.to_dict(db_config)
+                image_config_loader.set_config(image_config)
+                print(f"✅ [System] 图像识别配置加载完成 (来源: database, {image_config['provider']}/{image_config['model_name']})")
+            else:
+                # 使用 .env 默认配置
+                image_config = image_config_loader.load_from_env()
+                image_config_loader.set_config(image_config)
+                print(f"✅ [System] 图像识别配置加载完成 (来源: env)")
+    except Exception as e:
+        print(f"⚠️ [System] 图像识别配置加载失败: {e}, 使用 .env 默认配置")
+        from src.config.image_loader import image_config_loader
+        image_config = image_config_loader.load_from_env()
+        image_config_loader.set_config(image_config)
+
     # 初始化全局KnowledgeBase（单例模式，所有Agent共享）
     try:
         from src.services.knowledge_base import KnowledgeBase
