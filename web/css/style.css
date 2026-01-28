@@ -35,6 +35,133 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 .chat-user { background-color: #0ea5e9; border-bottom-right-radius: 2px; color: white; }
 .chat-thinking { padding: 8px 12px; color: #94a3b8; font-size: 0.85rem; font-style: italic; display: flex; align-items: center; gap: 8px; }
 
+/* 工具调用状态行 */
+.chat-tool-status {
+    padding: 8px 12px;
+    margin: 4px 0;
+    background-color: rgba(99, 102, 241, 0.1);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 8px;
+    font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: slide-in 0.3s ease-out;
+    justify-content: space-between;
+}
+
+.chat-tool-status-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-tool-status.calling {
+    border-left: 3px solid #6366f1;
+    background: linear-gradient(90deg, rgba(99, 102, 241, 0.15) 0%, rgba(99, 102, 241, 0.05) 100%);
+}
+
+.chat-tool-status.done {
+    border-left: 3px solid #22c55e;
+    background-color: rgba(34, 197, 94, 0.05);
+}
+
+.chat-tool-status .tool-icon {
+    font-size: 1rem;
+}
+
+.chat-tool-status.calling .tool-icon {
+    animation: pulse 1.5s infinite;
+}
+
+.chat-tool-status .tool-name {
+    font-weight: 600;
+    color: #a5b4fc;
+}
+
+.chat-tool-status .status-text {
+    color: #94a3b8;
+}
+
+.chat-tool-status.done .status-text {
+    color: #86efac;
+}
+
+/* 工具展开按钮 */
+.chat-tool-expand-btn {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    font-size: 0.75rem;
+}
+
+.chat-tool-expand-btn:hover {
+    color: #cbd5e1;
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.chat-tool-expand-btn.expanded {
+    transform: rotate(180deg);
+}
+
+/* 工具结果容器 */
+.chat-tool-result {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out;
+    margin-top: 0;
+}
+
+.chat-tool-result.show {
+    max-height: 400px;
+    overflow-y: auto;
+    margin-top: 8px;
+}
+
+.chat-tool-result-content {
+    background-color: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 0.8rem;
+    color: #cbd5e1;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+}
+
+@keyframes slide-in {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+/* AI 内容容器 */
+.ai-content {
+    margin-bottom: 8px;
+}
+
 /* Markdown 内容样式修正 */
 .chat-bubble p { margin-bottom: 0.5em; }
 .chat-bubble ul, .chat-bubble ol { padding-left: 1.2em; margin-bottom: 0.5em; }

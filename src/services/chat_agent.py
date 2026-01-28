@@ -92,7 +92,7 @@ class CustomsChatAgent:
             print(f"🚀 [Tool Call] 智能审单引擎正在执行...")
             orch = RiskAnalysisOrchestrator(llm_config=self.config)
             findings = []
-            
+
             async for event_str in orch.analyze_stream(raw_data, language="zh"):
                 if not event_str.startswith("data: "): continue
                 try:
@@ -103,7 +103,7 @@ class CustomsChatAgent:
                     elif data["type"] == "complete":
                         findings.append(f"\n【审计最终评估】\n{data['summary']}")
                 except: continue
-            
+
             return "\n".join(findings) if findings else "审单引擎未产生有效结论。"
 
         # 【修复点】使用 Tool 时显式提供 func (同步占位) 和 coroutine (异步实现)
@@ -194,7 +194,18 @@ class CustomsChatAgent:
 
                 elif event_type == "on_tool_start":
                     t_name = event["name"]
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'专家正在使用工具 [{t_name}] 深度分析中...'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': t_name, 'content': f'正在调用工具 [{t_name}]...'}, ensure_ascii=False)}\n\n"
+
+                elif event_type == "on_tool_end":
+                    t_name = event["name"]
+                    # 获取工具执行结果
+                    tool_output = event["data"].get("output", "")
+                    # 格式化工具结果（限制长度，避免过长）
+                    if isinstance(tool_output, str):
+                        tool_result = tool_output[:2000] + "..." if len(tool_output) > 2000 else tool_output
+                    else:
+                        tool_result = str(tool_output)[:2000]
+                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': t_name, 'content': f'工具 [{t_name}] 调用完毕', 'tool_result': tool_result}, ensure_ascii=False)}\n\n"
 
             if not has_sent_content:
                 # 保底

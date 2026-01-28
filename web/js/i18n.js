@@ -5,7 +5,7 @@ const translations = {
         settings: '设置',
         language: '语言',
         nav_audit: '审单',
-        nav_chat: '咨询',
+        nav_chat: '智能体',
         nav_report: '合规建议',
 
         // Header
@@ -30,10 +30,16 @@ const translations = {
         system_ready: '系统待命 SYSTEM READY',
 
         // 咨询模块
-        chat_assistant: '咨询助手',
+        chat_assistant: '智能体',
         rag_connected: 'RAG 知识库已连接',
-        ai_welcome: '👋 您好！我是您的海关法规专家。我可以帮您查询归类规则、税率政策或监管条件。',
+        ai_welcome: '👋 您好！我是海关智能体。我可以帮您调用各类工具，包括智能审单、法规检索等，为您提供专业的报关辅助服务。',
         chat_placeholder: '请输入问题...',
+
+        // 工具调用状态
+        tool_audit_declaration: '智能审单',
+        tool_search_customs_regulations: '法规检索',
+        tool_calling: '正在调用工具',
+        tool_call_done: '调用完毕',
 
         // 报告模块
         compliance_audit: '智能合规审计',
@@ -136,7 +142,7 @@ const translations = {
         settings: 'Cài đặt',
         language: 'Ngôn ngữ',
         nav_audit: 'Kiểm tra',
-        nav_chat: 'Tư vấn',
+        nav_chat: 'Tác nhân thông minh',
         nav_report: 'Đề xuất tuân thủ',
 
         // Header
@@ -161,10 +167,16 @@ const translations = {
         system_ready: 'Hệ thống sẵn sàng SYSTEM READY',
 
         // 咨询模块
-        chat_assistant: 'Trợ lý Tư vấn',
+        chat_assistant: 'Tác nhân thông minh',
         rag_connected: 'Đã kết nối cơ sở kiến thức RAG',
-        ai_welcome: '👋 Xin chào! Tôi là chuyên gia về quy định hải quan của bạn. Tôi có thể giúp bạn tra cứu quy tắc phân loại, chính sách thuế hoặc điều kiện giám sát.',
+        ai_welcome: '👋 Xin chào! Tôi là tác nhân thông minh hải quan. Tôi có thể giúp bạn gọi các công cụ khác nhau, bao gồm kiểm tra hải quan thông minh, tra cứu quy chế, v.v., để cung cấp dịch vụ hỗ trợ khai báo hải quan chuyên nghiệp.',
         chat_placeholder: 'Nhập câu hỏi...',
+
+        // 工具调用状态
+        tool_audit_declaration: 'Kiểm tra hải quan',
+        tool_search_customs_regulations: 'Tra cứu quy chế',
+        tool_calling: 'Đang gọi công cụ',
+        tool_call_done: 'Hoàn thành',
 
         // 报告模块
         compliance_audit: 'Kiểm toán Tuân thủ Thông minh',

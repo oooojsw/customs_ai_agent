@@ -1,0 +1,335 @@
+========================================
+进度报告 - 功能二工具调用状态显示优化
+========================================
+日期：2026-01-29
+功能：为功能二（咨询模块）的工具调用添加视觉反馈
+
+========================================
+一、需求概述
+========================================
+
+用户希望在功能二（咨询模块）的对话中，当AI调用工具时：
+1. 调用开始时：显示"调用中"动画（紫色边框 + 齿轮图标）
+2. 调用结束时：显示"调用完毕"状态（绿色边框 + 对勾图标）
+3. UI位置：嵌入在AI回答内容的流中间（不在气泡外部）
+4. 显示时长：永久保留在对话历史中，可回看
+
+涉及工具：
+- audit_declaration - 智能审单工具
+- search_customs_regulations - 法规检索工具
+
+
+========================================
+二、遇到的问题与解决方案
+========================================
+
+【问题1】工具状态全部显示在底部，不在中间
+-----------------------------------------------------------------------
+现象：
+- 所有工具调用状态都堆在对话历史的最后
+- AI回答内容显示在工具状态上方
+
+原因：
+- 前端使用 `history.insertAdjacentHTML('beforeend', toolHtml)`
+- 工具状态插入到整个 history 容器的末尾
+- 而不是插入到当前 AI 回答气泡内
+
+解决方案：
+- 修改为 `answerDiv.insertAdjacentHTML('beforebegin', toolHtml)`
+- 将工具状态插入到 AI 回答气泡之前（第一次尝试）
+
+【问题2】工具状态在AI回答气泡外部，用户要求在内部
+-----------------------------------------------------------------------
+现象：
+- 工具状态显示在 AI 回答气泡上方
+- 与回答内容分离，不在同一个气泡内
+
+用户反馈：
+"显示位置能不能直接显示在对话内部"
+
+解决方案：
+- 修改为 `document.getElementById(answerId).insertAdjacentHTML('beforeend', toolHtml)`
+- 将工具状态插入到 AI 回答气泡内部
+
+【问题3】工具调用完成后立即消失
+-----------------------------------------------------------------------
+现象：
+- 工具状态显示后，新的 answer 内容到来时消失
+- 用户反馈："这个调用完就消失了，我希望他不消失，一直保留在上下文里面"
+
+原因：
+- 代码使用 `innerHTML = marked.parse(fullText)` 覆盖整个内容
+- 每次收到新的 answer 内容时，整个 answerId 容器被重写
+- 工具状态元素被覆盖删除
+
+原代码（问题代码）：
+```javascript
+if (data.type === 'answer') {
+    fullText += data.content;
+    document.getElementById(answerId).innerHTML = marked.parse(fullText);  // ← 覆盖整个容器
+}
+```
+
+解决方案思路：
+- 分离文本内容和工具状态到不同的容器
+- 只更新文本部分，不影响工具状态
+
+第一次尝试（失败）：
+```html
+<div id="answerId" class="chat-bubble chat-ai">
+  <div id="answerContentId" class="ai-content">[文本内容]</div>
+</div>
+```
+
+代码：
+```javascript
+if (data.type === 'answer') {
+    fullText += data.content;
+    document.getElementById(answerContentId).innerHTML = marked.parse(fullText);  // 只更新文本
+}
+```
+
+新问题：
+- 工具状态还是显示在所有文本的最后
+- 因为所有文本累积在一个 answerContentId 中
+- 工具状态追加在 answerId 末尾，所以总是在最后
+
+【问题4】工具状态在文本末尾，不在流中间（最终问题）
+-----------------------------------------------------------------------
+现象：
+- 工具状态显示在所有文本内容的下方
+- 不是嵌入在 AI 回答的流中间
+
+用户反馈：
+"还是显示在底部啊，并没有显示在中间"
+
+根本原因分析：
+- 当前实现：所有文本累积在一个容器中
+  ```
+  [文本内容1 + 文本内容2 + 文本内容3...]
+  [工具状态]
+  ```
+- 期望实现：文本分段，工具状态在中间
+  ```
+  [文本内容1]
+  [工具状态]
+  [文本内容2]
+  ```
+
+最终解决方案：分段内容累积 + 动态插入
+-----------------------------------------------------------------------
+
+核心思路：
+1. 维护当前内容缓冲区 `currentContentBuffer`
+2. 维护最后一个内容 div `lastContentDiv`
+3. 收到 answer 时：累积并更新 `lastContentDiv`
+4. 收到 tool_start 时：
+   - 在 `lastContentDiv` 之后插入工具状态
+   - 重置 buffer，准备接收工具调用后的新内容
+5. 收到后续 answer 时：创建新的 content div，追加在工具状态之后
+
+最终实现代码：
+```javascript
+let currentContentBuffer = '';  // 当前累积的内容
+let lastContentDiv = null;      // 最后一个内容div
+
+if (data.type === 'answer') {
+    currentContentBuffer += data.content;
+    // 更新或创建内容div
+    if (lastContentDiv) {
+        lastContentDiv.innerHTML = marked.parse(currentContentBuffer);
+    } else {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'ai-content';
+        contentDiv.innerHTML = marked.parse(currentContentBuffer);
+        document.getElementById(answerId).appendChild(contentDiv);
+        lastContentDiv = contentDiv;
+    }
+} else if (data.type === 'tool_start') {
+    // 工具状态插入到最后一个内容div之后
+    const toolHtml = `<div class="chat-tool-status calling">...</div>`;
+    if (lastContentDiv) {
+        lastContentDiv.insertAdjacentHTML('afterend', toolHtml);
+    } else {
+        document.getElementById(answerId).insertAdjacentHTML('beforeend', toolHtml);
+    }
+    // 重置buffer，准备接收工具调用后的新内容
+    currentContentBuffer = '';
+    lastContentDiv = null;
+}
+```
+
+DOM 结构：
+```html
+<div id="answerId" class="chat-bubble chat-ai">
+  <div class="ai-content">
+    好的，我来帮你查询这个HS编码...
+  </div>
+
+  <div class="chat-tool-status done">
+    <i class="fa-solid fa-check"></i>
+    <span class="tool-name">法规检索</span>
+    <span class="status-text">调用完毕</span>
+  </div>
+
+  <div class="ai-content">
+    根据查询结果，HS编码8501.51.0000指的是...
+  </div>
+</div>
+```
+
+
+========================================
+三、最终实现效果
+========================================
+
+视觉设计：
+- 调用中：紫色边框 + 渐变背景 + 齿轮图标（脉冲动画）
+- 调用完毕：绿色边框 + 浅绿背景 + 对勾图标
+- 滑入动画：工具状态从上方滑入（0.3s ease-out）
+
+文本与工具间距：
+- .ai-content { margin-bottom: 8px; }
+- 文本内容和工具状态之间有合适间距
+
+国际化支持：
+- 中文：智能审单 / 法规检索 / 正在调用工具 / 调用完毕
+- 越南语：Kiểm tra hải quan / Tra cứu quy chế / Đang gọi công cụ / Hoàn thành
+
+
+========================================
+四、修改文件清单
+========================================
+
+1. 后端修改（1个文件）
+   文件：src/services/chat_agent.py
+   修改：添加 tool_end 事件
+   位置：第199-201行
+   代码：
+   ```python
+   elif event_type == "on_tool_end":
+       t_name = event["name"]
+       yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': t_name, 'content': f'工具 [{t_name}] 调用完毕'}, ensure_ascii=False)}\n\n"
+   ```
+
+2. 国际化文本（1个文件）
+   文件：web/js/i18n.js
+   修改：添加工具调用相关文本（中越双语）
+   位置：第38-42行（中文），第175-179行（越南语）
+
+3. 样式文件（1个文件）
+   文件：web/css/style.css
+   修改：添加工具状态样式 + ai-content 间距
+   位置：第38-106行
+
+4. 前端逻辑（1个文件）
+   文件：web/js/chat.js
+   修改：
+   - 添加工具名称映射函数（第8-15行）
+   - 改造流式内容处理逻辑（第46-130行）
+   - 实现分段内容累积 + 动态插入
+
+
+========================================
+五、测试验证
+========================================
+
+测试场景1：法规检索工具调用
+输入："查询HS编码8501.51.0000的归类规则"
+预期结果：
+✅ 显示 "🔄 法规检索 正在调用工具"（紫色，齿轮动画）
+✅ 完成后变为 "✅ 法规检索 调用完毕"（绿色，对勾）
+✅ 工具状态嵌入在 AI 回答的流中间
+✅ 工具状态永久保留，不会消失
+
+测试场景2：审单工具调用
+输入："帮我审核这段报关单数据"
+预期结果：
+✅ 显示 "🔄 智能审单 正在调用工具"
+✅ 完成后变为 "✅ 智能审单 调用完毕"
+✅ 工具状态在回答内容中间
+
+测试场景3：越南语模式
+设置：切换语言到越南语
+预期结果：
+✅ 工具名称显示为 "Tra cứu quy chế"
+✅ 状态文本显示为 "Đang gọi công cụ" → "Hoàn thành"
+
+
+========================================
+六、关键经验总结
+========================================
+
+1. 流式内容处理的坑
+   - 不要用 innerHTML 覆盖整个容器（会删除动态插入的元素）
+   - 需要分离静态内容和动态状态
+   - 使用分段容器 + 增量更新
+
+2. 工具状态插入位置的选择
+   - 第一次尝试：插入到 history 末尾 → 错误，全部堆在最后
+   - 第二次尝试：插入到 answerDiv 之前 → 错误，在气泡外部
+   - 第三次尝试：插入到 answerId 内部 → 部分正确
+   - 最终方案：插入到 lastContentDiv 之后 → 正确，在流中间
+
+3. 内容分段的重要性
+   - 工具调用前后的内容要分开存储
+   - 使用 currentContentBuffer 累积当前段落
+   - 遇到工具调用时重置 buffer，开始新段落
+
+4. DOM 操作的最佳实践
+   - 使用 insertAdjacentHTML 而不是 innerHTML（保留现有元素）
+   - 维护对最后一个内容元素的引用（lastContentDiv）
+   - 在正确的位置插入新元素（afterend / beforebegin）
+
+
+========================================
+七、端口清理记录
+========================================
+
+测试前清理：PID 53704（端口 8000）
+测试后清理：PID 52000（端口 8000）
+
+
+========================================
+八、下一步优化建议（可选）
+========================================
+
+1. 工具调用时间戳
+   - 在工具状态旁显示调用开始时间
+   - 显示工具调用耗时
+
+2. 工具结果预览
+   - 点击工具状态，展开显示工具返回的简要结果
+   - 法规检索：显示匹配的文档数量
+   - 审单工具：显示风险等级
+
+3. 多工具并行调用
+   - 如果同时调用多个工具，显示并行状态
+   - 使用 flexbox 横向排列多个工具状态
+
+4. 工具状态折叠
+   - 长对话时，提供折叠历史工具状态的选项
+   - 保留完整的工具调用历史记录
+
+
+========================================
+结论
+========================================
+
+✅ 功能二工具调用状态显示功能已完成
+✅ 工具状态正确嵌入在 AI 回答的流中间
+✅ 工具状态永久保留在对话历史中
+✅ 支持中文和越南语双语显示
+✅ 视觉反馈清晰（调用中/调用完毕）
+✅ 所有测试场景通过
+
+技术难点：
+- 流式内容与动态状态的共存问题
+- DOM 结构的动态插入与更新
+- 内容分段的时机把握
+
+突破点：
+- 分段内容累积 + 动态插入方案
+- lastContentDiv 引用维护
+- buffer 重置机制
+
