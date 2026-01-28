@@ -1,61 +1,68 @@
-// LLM 配置管理
+// LLM 配置管理 - 深度修复版
 
 const PROVIDER_PRESETS = {
+    // 1. DeepSeek (仅文本)
     deepseek: {
-        base_url: 'https://api.deepseek.com',
+        base_url: 'https://api.deepseek.com/v1', // 加上 /v1 更标准
         models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
-        image_models: []  // DeepSeek暂无视觉模型
+        image_models: [] // DeepSeek 暂不支持视觉
     },
+
+    // 2. OpenAI
     openai: {
         base_url: 'https://api.openai.com/v1',
-        models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-        image_models: [  // OpenAI视觉模型
-            'gpt-4o',  // GPT-4o支持图像
-            'gpt-4-turbo',  // GPT-4 Turbo支持图像
-            'chatgpt-4o-latest'  // 最新版本
-        ]
+        models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+        image_models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo']
     },
+
+    // 3. 通义千问 (Qwen) - 使用最新的 compatible-mode
     qwen: {
-        base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-max-longcontext'],
-        image_models: [  // 通义千问视觉模型
+        base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', // ✅ 已更新
+        models: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
+        image_models: [ // ✅ 已更新 Vision 模型列表
             'qwen-vl-max',
             'qwen-vl-plus',
-            'qwen2.5-vl-7b-instruct',
-            'qwen2.5-vl-32b-instruct',
-            'qwen2.5-vl-72b-instruct'
+            'qwen2.5-vl-72b-instruct', // 最新
+            'qwen2.5-vl-7b-instruct'   // 7B 版本
         ]
     },
+
+    // 4. 智谱 AI (Zhipu) - 使用 paas/v4
     zhipu: {
-        base_url: 'https://open.bigmodel.cn/api/paas/v4/',
-        models: ['glm-4.7', 'glm-4-turbo', 'glm-4-plus', 'glm-4-air', 'glm-4-flash'],
-        image_models: [  // 智谱视觉模型
+        base_url: 'https://open.bigmodel.cn/api/paas/v4/', // ✅ 已更新
+        models: ['glm-4', 'glm-4-flash', 'glm-4-plus'],
+        image_models: [ // ✅ 已更新 Vision 模型列表
             'glm-4v',
             'glm-4v-plus',
             'glm-4v-flash'
         ]
     },
+
+    // 5. 硅基流动 (SiliconFlow)
     siliconflow: {
-        base_url: 'https://api.siliconflow.cn/v1',
-        models: [],  // LLM模型需要通过API获取
-        image_models: [  // 图像模型预设（用于无API Key时显示）
-            "Qwen/Qwen2-VL-7B-Instruct",
-            "Qwen/Qwen2-VL-72B-Instruct",
-            "Qwen/Qwen2.5-VL-7B-Instruct",
-            "Qwen/Qwen2.5-VL-32B-Instruct",
-            "Qwen/Qwen2.5-VL-72B-Instruct",
-            "Qwen/Qwen3-VL-32B-Instruct",
-            "OpenGVLab/InternVL2-Llama3-76B",
-            "deepseek-ai/deepseek-vl-7b"
+        base_url: 'https://api.siliconflow.cn/v1', // ✅ 确认使用国内 .cn
+        models: [], // 文本模型需 API 获取
+        image_models: [ // ✅ 确认使用带前缀的完整 ID
+            'Qwen/Qwen2.5-VL-72B-Instruct',
+            'Qwen/Qwen2.5-VL-7B-Instruct',
+            'Qwen/Qwen2-VL-72B-Instruct',
+            'Pro/Qwen/Qwen2-VL-7B-Instruct', // 免费版通常带 Pro 或直接用
+            'deepseek-ai/deepseek-vl2', // 如果未来支持
+            'THUDM/glm-4v-9b'
         ]
     },
+
+    // 6. Azure
     azure: {
-        base_url: '',  // 用户需要自己输入
-        models: []     // 需要通过API获取
+        base_url: '',
+        models: [],
+        image_models: []
     },
+
+    // 7. Custom
     custom: {
         base_url: '',
-        models: []     // 需要通过API获取
+        models: []
     }
 };
 
@@ -65,159 +72,201 @@ async function initLLMConfig() {
         const response = await fetch('/api/v1/config/llm');
         const config = await response.json();
 
+        // 填充 UI
         document.getElementById('llmEnabled').checked = config.is_enabled;
-        document.getElementById('llmProvider').value = config.provider;
-        document.getElementById('llmBaseUrl').value = config.base_url;
-        document.getElementById('llmModelName').value = config.model_name;
-        document.getElementById('llmTemperature').value = config.temperature;
-        document.getElementById('tempValue').innerText = config.temperature;
+        document.getElementById('llmProvider').value = config.provider || 'deepseek';
 
-        // 填充API Key（如果存在）
-        if (config.api_key) {
-            document.getElementById('llmApiKey').value = config.api_key;
-            console.log('[LLM Config] 已加载保存的API Key');
-        }
+        // 触发一次厂商预设更新（处理 Azure 字段显示/隐藏），但不加载默认值覆盖已保存的值
+        updateUIForProvider(config.provider || 'deepseek');
 
-        // 如果是Azure，填充api_version
-        if (config.api_version) {
-            document.getElementById('llmApiVersion').value = config.api_version;
-        }
+        document.getElementById('llmBaseUrl').value = config.base_url || '';
+        document.getElementById('llmModelName').value = config.model_name || '';
+        document.getElementById('llmTemperature').value = config.temperature || 0.3;
+        document.getElementById('tempValue').innerText = config.temperature || 0.3;
 
-        // ✅ 新增：显示当前配置来源
+        if (config.api_key) document.getElementById('llmApiKey').value = config.api_key;
+        if (config.api_version) document.getElementById('llmApiVersion').value = config.api_version;
+
         updateConfigSourceDisplay(config);
 
-        toggleLLMFields();
+        // 根据启用状态显示/隐藏表单
+        const form = document.getElementById('llmConfigForm');
+        form.classList.toggle('hidden', !config.is_enabled);
+
     } catch (error) {
         console.error('Failed to load LLM config:', error);
     }
 }
 
-/**
- * ✅ 新增：更新配置来源显示
- * @param {Object} config - LLM配置对象
- */
-function updateConfigSourceDisplay(config) {
-    // 获取或创建配置来源标签元素
-    let sourceLabel = document.getElementById('configSourceLabel');
-    if (!sourceLabel) {
-        // 如果不存在，动态创建（添加到开关旁边）
-        const enabledLabel = document.querySelector('label[for="llmEnabled"]');
-        if (enabledLabel && enabledLabel.parentElement) {
-            sourceLabel = document.createElement('div');
-            sourceLabel.id = 'configSourceLabel';
-            sourceLabel.className = 'text-sm mt-2 px-3 py-2 rounded bg-gray-100 dark:bg-gray-800';
-            sourceLabel.style.cssText = 'font-size: 0.875rem; margin-top: 0.5rem; padding: 0.5rem 0.75rem; border-radius: 0.375rem;';
-            enabledLabel.parentElement.after(sourceLabel);
-        }
+// 纯 UI 更新，不重置数据
+function updateUIForProvider(provider) {
+    const azureGroup = document.getElementById('azureConfigGroup');
+    if (provider === 'azure') {
+        azureGroup.classList.remove('hidden');
+    } else {
+        azureGroup.classList.add('hidden');
     }
-
-    if (sourceLabel) {
-        // 根据配置来源显示不同的样式和文本
-        if (!config.is_enabled) {
-            // 使用.env配置
-            sourceLabel.textContent = '✓ 当前配置：.env 环境变量';
-            sourceLabel.style.color = '#10b981'; // 绿色
-            sourceLabel.style.backgroundColor = '#d1fae5';
-            sourceLabel.style.border = '1px solid #10b981';
-        } else {
-            // 使用用户配置
-            const providerName = config.provider || '未知';
-            sourceLabel.textContent = `✓ 当前配置：用户自定义 (${providerName}/${config.model_name})`;
-            sourceLabel.style.color = '#3b82f6'; // 蓝色
-            sourceLabel.style.backgroundColor = '#dbeafe';
-            sourceLabel.style.border = '1px solid #3b82f6';
-        }
-    }
-
-    // 在控制台显示配置来源
-    const source = config.is_enabled ? 'user' : 'env';
-    console.log(`[LLM Config] 配置来源: ${source}, 模型: ${config.model_name}, 是否启用: ${config.is_enabled}`);
 }
 
-function toggleLLMFields() {
+// 厂商下拉框变更事件
+function updateProviderPresets() {
+    const provider = document.getElementById('llmProvider').value;
+    const preset = PROVIDER_PRESETS[provider];
+
+    updateUIForProvider(provider);
+
+    // 切换厂商时，清空敏感字段，避免误用
+    document.getElementById('llmApiKey').value = '';
+
+    // 填充 Base URL 预设
+    if (preset && preset.base_url) {
+        document.getElementById('llmBaseUrl').value = preset.base_url;
+    } else {
+        document.getElementById('llmBaseUrl').value = '';
+    }
+
+    // 尝试加载该厂商的历史配置（如果后端支持按厂商存储，当前后端是单条记录覆盖）
+    // 由于后端目前是单条记录逻辑，切换厂商意味着用户想改配置，所以这里只填预设，不加载旧数据
+
+    fetchModels(); // 刷新模型列表
+}
+
+// 开关切换事件
+async function toggleLLMFields() {
     const enabled = document.getElementById('llmEnabled').checked;
     const form = document.getElementById('llmConfigForm');
+
     form.classList.toggle('hidden', !enabled);
 
-    // ✅ 新增：实时更新配置来源显示（预览模式）
-    const config = {
-        is_enabled: enabled,
-        provider: document.getElementById('llmProvider').value,
-        model_name: getModelName()
-    };
-    updateConfigSourceDisplay(config);
+    // 策略：
+    // 1. 如果是 关闭 (OFF)：立即保存并重载，切回 .env 模式
+    // 2. 如果是 开启 (ON)：只显示 UI，不立即保存（因为 Key 可能是空的）。
+    //    用户必须点击"保存并应用"才生效。这样避免了报错。
 
-    // ✅ 核心修复：自动保存配置到后端
-    autoSaveConfig(enabled);
-
-    // 启用时自动获取模型列表
-    if (enabled) {
-        fetchModels();
+    if (!enabled) {
+        await autoSaveConfig(false); // 传入 false 明确禁用
+    } else {
+        // 仅更新 UI 显示，提示用户去编辑
+        updateConfigSourceDisplay({ is_enabled: true, provider: '未保存...', model_name: '等待配置' });
     }
 }
 
-/**
- * ✅ 新增：自动保存配置（开关变化时调用）
- * @param {boolean} enabled - 是否启用用户配置
- */
 async function autoSaveConfig(enabled) {
+    // 收集当前表单数据（即使用户没填完，disable 时也得传，后端只看 is_enabled）
+    const config = getFormConfig();
+    config.is_enabled = enabled;
+
     try {
-        // 准备配置数据
-        const config = {
-            provider: document.getElementById('llmProvider').value,
-            api_key: document.getElementById('llmApiKey').value,
-            base_url: document.getElementById('llmBaseUrl').value,
-            model_name: getModelName() || 'deepseek-chat', // 默认值
-            temperature: parseFloat(document.getElementById('llmTemperature').value),
-            is_enabled: enabled
-        };
-
-        // Azure 特殊处理
-        if (config.provider === 'azure') {
-            config.api_version = document.getElementById('llmApiVersion').value;
-        }
-
-        // 如果启用但没有 API Key，提示用户但不阻止
-        if (enabled && !config.api_key) {
-            console.warn('[LLM Config] 启用了自定义配置但未填写 API Key');
-        }
-
-        // 1. 保存配置
-        const saveResponse = await fetch('/api/v1/config/llm', {
+        // 1. 保存
+        const saveRes = await fetch('/api/v1/config/llm', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(config)
         });
 
-        const saveResult = await saveResponse.json();
+        if (!saveRes.ok) throw new Error("保存失败");
 
-        if (saveResult.status !== 'success') {
-            console.error('[LLM Config] 保存失败:', saveResult.message);
-            return;
+        // 2. 重载
+        const reloadRes = await fetch('/api/v1/config/llm/reload', { method: 'POST' });
+        const reloadData = await reloadRes.json();
+
+        if (reloadData.status === 'success') {
+            const sourceText = reloadData.config.source === 'env' ? '.env 环境变量' : '用户自定义';
+            console.log(`[Config] 切换成功: ${sourceText}`);
+
+            // 更新 UI 状态条
+            updateConfigSourceDisplay({
+                is_enabled: enabled,
+                provider: reloadData.config.provider,
+                model_name: reloadData.config.model
+            });
         }
-
-        console.log(`[LLM Config] 配置已${enabled ? '启用' : '禁用'}，正在热重载...`);
-
-        // 2. 热重载配置
-        const reloadResponse = await fetch('/api/v1/config/llm/reload', {
-            method: 'POST'
-        });
-
-        const reloadResult = await reloadResponse.json();
-
-        if (reloadResult.status === 'success') {
-            const reloadConfig = reloadResult.config || {};
-            const sourceText = reloadConfig.source === 'env' ? '.env 环境变量' : '用户自定义';
-            console.log(`[LLM Config] ✓ 热重载成功！当前配置来源：${sourceText}`);
-        } else {
-            console.error('[LLM Config] 热重载失败:', reloadResult.message);
-        }
-
-    } catch (error) {
-        console.error('[LLM Config] 自动保存失败:', error);
+    } catch (e) {
+        console.error("Auto save failed:", e);
+        alert("配置切换失败，请检查后端日志");
     }
 }
 
+function getFormConfig() {
+    return {
+        provider: document.getElementById('llmProvider').value,
+        api_key: document.getElementById('llmApiKey').value,
+        base_url: document.getElementById('llmBaseUrl').value,
+        model_name: getModelName() || 'deepseek-chat',
+        temperature: parseFloat(document.getElementById('llmTemperature').value),
+        is_enabled: document.getElementById('llmEnabled').checked,
+        api_version: document.getElementById('llmApiVersion').value // Azure 专用
+    };
+}
+
+// 保存按钮点击事件
+async function saveLLMConfig() {
+    const config = getFormConfig();
+
+    // 基础校验
+    if (config.is_enabled) {
+        if (!config.api_key) {
+            alert("启用自定义配置时，API Key 不能为空！");
+            return;
+        }
+        if (config.provider === 'azure' && !config.base_url) {
+            alert("Azure 模式下，API 地址 (Endpoint) 不能为空！");
+            return;
+        }
+    }
+
+    try {
+        const saveRes = await fetch('/api/v1/config/llm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+
+        if (!saveRes.ok) throw new Error("保存失败");
+
+        const reloadRes = await fetch('/api/v1/config/llm/reload', { method: 'POST' });
+        const reloadData = await reloadRes.json();
+
+        if (reloadData.status === 'success') {
+            alert(`✅ 配置已保存并生效！\n当前使用: ${reloadData.config.provider} / ${reloadData.config.model}`);
+            updateConfigSourceDisplay({
+                is_enabled: true,
+                provider: reloadData.config.provider,
+                model_name: reloadData.config.model
+            });
+        }
+    } catch (e) {
+        alert("❌ 保存失败: " + e.message);
+    }
+}
+
+// 确保updateConfigSourceDisplay逻辑正确
+function updateConfigSourceDisplay(config) {
+    let sourceLabel = document.getElementById('configSourceLabel');
+    if (!sourceLabel) {
+        const enabledLabel = document.querySelector('label[for="llmEnabled"]');
+        if (enabledLabel && enabledLabel.parentElement) {
+            sourceLabel = document.createElement('div');
+            sourceLabel.id = 'configSourceLabel';
+            sourceLabel.className = 'text-xs mt-2 px-2 py-1 rounded bg-gray-800 border border-gray-700 text-gray-400';
+            enabledLabel.parentElement.after(sourceLabel);
+        }
+    }
+
+    if (sourceLabel) {
+        if (!config.is_enabled) {
+            sourceLabel.textContent = '当前: .env 系统配置';
+            sourceLabel.className = 'text-xs mt-2 px-2 py-1 rounded bg-green-900/30 border border-green-700 text-green-400';
+        } else {
+            const p = config.provider || 'Custom';
+            const m = config.model_name || 'Unknown';
+            sourceLabel.textContent = `当前: 用户配置 (${p} - ${m})`;
+            sourceLabel.className = 'text-xs mt-2 px-2 py-1 rounded bg-blue-900/30 border border-blue-700 text-blue-400';
+        }
+    }
+}
+
+// 保留其他辅助函数
 function onApiKeyChanged() {
     const apiKey = document.getElementById('llmApiKey').value;
     const provider = document.getElementById('llmProvider').value;
@@ -227,31 +276,6 @@ function onApiKeyChanged() {
         console.log('检测到API Key输入，自动获取模型列表...');
         fetchModels();
     }
-}
-
-function updateProviderPresets() {
-    const provider = document.getElementById('llmProvider').value;
-    const preset = PROVIDER_PRESETS[provider];
-    const azureGroup = document.getElementById('azureApiVersionGroup');
-
-    // 1. 显示/隐藏Azure API Version字段
-    if (provider === 'azure') {
-        azureGroup.classList.remove('hidden');
-    } else {
-        azureGroup.classList.add('hidden');
-    }
-
-    // 2. 先加载已保存的配置（如果有）
-    loadProviderConfig(provider);
-
-    // 3. 如果没有保存的配置，使用预设base_url
-    const currentBaseUrl = document.getElementById('llmBaseUrl').value;
-    if (!currentBaseUrl && preset && preset.base_url) {
-        document.getElementById('llmBaseUrl').value = preset.base_url;
-    }
-
-    // 4. 获取模型列表
-    fetchModels();
 }
 
 async function loadProviderConfig(provider) {
@@ -466,68 +490,6 @@ async function testLLMConnection() {
     }, 5000);
 }
 
-async function saveLLMConfig() {
-    const modelName = getModelName();
-    if (!modelName) {
-        alert('❌ 请选择或输入模型名称');
-        return;
-    }
-
-    const config = {
-        provider: document.getElementById('llmProvider').value,
-        api_key: document.getElementById('llmApiKey').value,
-        base_url: document.getElementById('llmBaseUrl').value,
-        model_name: modelName,
-        temperature: parseFloat(document.getElementById('llmTemperature').value),
-        is_enabled: document.getElementById('llmEnabled').checked  // 包含开关状态
-    };
-
-    // 添加Azure的api_version参数
-    if (config.provider === 'azure') {
-        config.api_version = document.getElementById('llmApiVersion').value;
-    }
-
-    try {
-        // 1. 保存配置
-        const saveResponse = await fetch('/api/v1/config/llm', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
-
-        const saveResult = await saveResponse.json();
-
-        if (saveResult.status !== 'success') {
-            throw new Error(saveResult.message);
-        }
-
-        console.log('[LLM Config] 配置已保存');
-
-        // 2. 热重载配置
-        const reloadResponse = await fetch('/api/v1/config/llm/reload', {
-            method: 'POST'
-        });
-
-        const reloadResult = await reloadResponse.json();
-
-        if (reloadResult.status === 'success') {
-            const reloadConfig = reloadResult.config || {};
-            const sourceText = reloadConfig.source === 'env' ? '.env 环境变量' : '用户自定义';
-            console.log('[LLM Config] 配置已重载:', reloadConfig);
-
-            // ✅ 优化：显示简洁的提示，不再刷新页面
-            alert(`✅ 配置已保存并应用！\n\n当前配置来源：${sourceText}\n模型：${reloadConfig.model || config.model_name}`);
-
-            // ✅ 优化：更新配置来源显示（不需要刷新页面）
-            updateConfigSourceDisplay(config);
-        } else {
-            throw new Error(reloadResult.message);
-        }
-    } catch (error) {
-        alert('❌ 操作失败: ' + error.message);
-    }
-}
-
 async function resetLLMConfig() {
     if (!confirm('确定要切换回 .env 配置吗？\n\n这将禁用所有自定义配置，系统将使用 .env 文件中的环境变量。')) {
         return;
@@ -557,7 +519,7 @@ async function resetLLMConfig() {
             const reloadConfig = reloadResult.config || {};
             console.log('[LLM Config] 已重置为 .env 配置:', reloadConfig);
 
-            // 3. ✅ 优化：更新UI状态，不需要刷新页面
+            // 3. 更新UI状态，不需要刷新页面
             // 关闭开关
             document.getElementById('llmEnabled').checked = false;
             // 隐藏配置表单

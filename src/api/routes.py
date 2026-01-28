@@ -648,7 +648,7 @@ async def get_llm_config():
 
 @router.post("/config/llm")
 async def save_llm_config(config: LLMConfigRequest):
-    """保存 LLM 配置"""
+    """保存 LLM 配置 - 带数据清洗"""
     if not BATCH_AVAILABLE:
         raise HTTPException(status_code=501, detail="数据库不可用")
 
@@ -656,11 +656,26 @@ async def save_llm_config(config: LLMConfigRequest):
     async with AsyncSessionLocal() as db:
         from src.database.crud import LLMConfigRepository
         repo = LLMConfigRepository(db)
-        saved_config = await repo.save_config(config.dict())
+
+        # --- 数据清洗逻辑 ---
+        config_dict = config.dict()
+        provider = config_dict.get('provider')
+
+        # 如果不是 Azure，强制清空 Azure 特有字段，防止污染
+        if provider != 'azure':
+            config_dict['api_version'] = None
+            # 确保 base_url 格式正确 (移除末尾斜杠)
+            if config_dict.get('base_url'):
+                config_dict['base_url'] = config_dict['base_url'].rstrip('/')
+                # 如果是 SiliconFlow/DeepSeek 且没有 /v1，根据情况提示或自动补全
+                # 这里暂时不做自动补全，依靠前端或 LLMService 的容错
+
+        # 保存
+        saved_config = await repo.save_config(config_dict)
 
         return {
             "status": "success",
-            "message": "配置已保存",
+            "message": "配置已保存并清洗",
             "config_id": saved_config.id
         }
 
@@ -709,45 +724,46 @@ async def test_llm_connection(config: LLMConfigRequest):
 @router.post("/config/llm/reload")
 async def reload_llm_config(request: Request):
     """
-    热重载 LLM 配置（无需重启服务）
-
-    重新初始化所有 Agent，使新配置立即生效
+    热重载 LLM 配置 - 确保原子性更新
     """
     try:
         from src.database.connection import AsyncSessionLocal
         from src.config.llm_loader import llm_config_loader
-        from src.services.chat_agent import CustomsChatAgent
-        from src.services.report_agent import ComplianceReporter
 
-        # 加载新配置
+        # 1. 重新加载配置 (这会查询 DB 并更新 Loader 内部状态)
         async with AsyncSessionLocal() as db:
             llm_config = await llm_config_loader.load_config(db)
 
-        # ✅ 修复：更新 app.state.llm_config（关键！）
-        # 功能一依赖此配置，必须更新
+        # 2. 强制更新全局状态 (功能一依赖)
         request.app.state.llm_config = llm_config
 
-        # 重新初始化 Agent
-        kb = request.app.state.kb
+        # 3. 重新初始化 Agent (功能二、三依赖)
+        # 必须传入新的 llm_config，否则 Agent 会使用旧的默认值
+        kb = getattr(request.app.state, "kb", None)
+
+        from src.services.chat_agent import CustomsChatAgent
+        from src.services.report_agent import ComplianceReporter
+
+        # 销毁旧实例 (Python GC 会处理，但显式替换引用)
         request.app.state.agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
         request.app.state.reporter = ComplianceReporter(kb=kb, llm_config=llm_config)
 
+        print(f"🔄 [System] 系统配置热重载完成。当前模式: {llm_config.get('source')} | 厂商: {llm_config.get('provider', 'deepseek')}")
+
         return {
             "status": "success",
-            "message": "配置已重新加载",
+            "message": "系统核心已重载",
             "config": {
                 "source": llm_config.get('source', 'unknown'),
-                "provider": llm_config.get('source', 'unknown'),
-                "model": llm_config['model'],
-                "base_url": llm_config['base_url']
+                "provider": llm_config.get('provider', 'unknown'),
+                "model": llm_config.get('model', 'unknown')
             }
         }
     except Exception as e:
         traceback.print_exc()
         return {
             "status": "error",
-            "message": f"重载失败: {str(e)}",
-            "detail": traceback.format_exc()[:500]
+            "message": f"重载失败: {str(e)}"
         }
 
 
@@ -1148,106 +1164,118 @@ async def test_image_connection(config: ImageConfigRequest):
     try:
         import httpx
 
-        # 验证必要参数
-        if not config.api_key or len(config.api_key) < 10:
-            return {
-                "status": "error",
-                "message": "API Key 无效或太短"
-            }
-
+        # 1. 基础校验
+        if not config.api_key or len(config.api_key) < 5:
+            return {"status": "error", "message": "API Key 无效或为空"}
         if not config.model_name:
+            return {"status": "error", "message": "请指定模型名称"}
+
+        print(f"🔍 [Image Test] Testing provider: {config.provider}, Model: {config.model_name}")
+
+        # =======================================================
+        # 场景 A: DeepSeek (拦截)
+        # =======================================================
+        if config.provider == "deepseek":
             return {
                 "status": "error",
-                "message": "请指定模型名称"
+                "message": "❌ DeepSeek 官方 API 暂不支持视觉(Vision)功能。\n请切换到 通义千问、智谱AI 或 硅基流动。"
             }
 
-        # 根据provider真实测试API
+        # =======================================================
+        # 场景 B: Gemini (Google)
+        # =======================================================
         if config.provider == "gemini":
-            # 测试 Gemini API
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.model_name}:generateContent?key={config.api_key}"
-            test_payload = {
-                "contents": [{
-                    "parts": [{"text": "Hi"}]
-                }]
-            }
+            test_payload = {"contents": [{"parts": [{"text": "Hi"}]}]}
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
                 response = await client.post(url, json=test_payload)
-
                 if response.status_code == 200:
-                    return {
-                        "status": "success",
-                        "message": f"✅ Gemini 连接成功 ({config.model_name})"
-                    }
-                elif response.status_code == 429:
-                    return {
-                        "status": "error",
-                        "message": "❌ API 配额已用完或请求频率超限 (429)"
-                    }
-                elif response.status_code == 401:
-                    return {
-                        "status": "error",
-                        "message": "❌ API Key 无效 (401)"
-                    }
+                    return {"status": "success", "message": f"✅ Gemini 连接成功"}
                 else:
-                    return {
-                        "status": "error",
-                        "message": f"❌ API 调用失败 (HTTP {response.status_code})"
-                    }
+                    return {"status": "error", "message": f"❌ Google API 错误 ({response.status_code}): {response.text[:100]}"}
 
+        # =======================================================
+        # 场景 C: Azure OpenAI
+        # =======================================================
         elif config.provider == "azure":
-            # 测试 Azure OpenAI API
             if not config.endpoint:
-                return {
-                    "status": "error",
-                    "message": "❌ Azure Endpoint 未配置"
-                }
+                return {"status": "error", "message": "❌ Azure Endpoint 未配置"}
 
-            url = f"{config.endpoint}/openai/deployments/{config.model_name}/chat/completions?api-version={config.api_version}"
+            base = config.endpoint.rstrip('/')
+            url = f"{base}/openai/deployments/{config.model_name}/chat/completions?api-version={config.api_version}"
+            headers = {"api-key": config.api_key, "Content-Type": "application/json"}
+            test_payload = {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}
+
+            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+                response = await client.post(url, json=test_payload, headers=headers)
+                if response.status_code == 200:
+                    return {"status": "success", "message": f"✅ Azure 连接成功"}
+                elif response.status_code == 404:
+                    return {"status": "error", "message": "❌ 模型部署名不存在 (404)"}
+                else:
+                    return {"status": "error", "message": f"❌ Azure 错误 ({response.status_code})"}
+
+        # =======================================================
+        # 场景 D: OpenAI 兼容 (SiliconFlow, Qwen, Zhipu, OpenAI)
+        # =======================================================
+        elif config.provider in ["siliconflow", "openai", "qwen", "zhipu", "custom"]:
+            if not config.base_url:
+                return {"status": "error", "message": "❌ Base URL 未配置"}
+
+            # URL 规范化处理
+            base = config.base_url.rstrip('/')
+
+            # 针对硅基流动的智能补全
+            if config.provider == 'siliconflow' and not base.endswith('/v1'):
+                base += '/v1'
+
+            # 拼接标准 Chat 完成接口
+            url = f"{base}/chat/completions"
+
             headers = {
-                "api-key": config.api_key,
+                "Authorization": f"Bearer {config.api_key}",
                 "Content-Type": "application/json"
             }
+
+            # 发送纯文本测试 (所有支持 Vision 的 OpenAI 兼容接口都支持纯文本)
             test_payload = {
+                "model": config.model_name,
                 "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 10
+                "max_tokens": 5,
+                "stream": False
             }
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            print(f"📡 [Image Test] POST {url}")
+
+            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
                 response = await client.post(url, json=test_payload, headers=headers)
 
                 if response.status_code == 200:
-                    return {
-                        "status": "success",
-                        "message": f"✅ Azure 连接成功 ({config.model_name})"
-                    }
+                    return {"status": "success", "message": f"✅ {config.provider} 连接成功"}
                 elif response.status_code == 401:
-                    return {
-                        "status": "error",
-                        "message": "❌ API Key 无效 (401)"
-                    }
+                    return {"status": "error", "message": f"❌ 认证失败: API Key 无效"}
+                elif response.status_code == 404:
+                    return {"status": "error", "message": f"❌ 路径或模型不存在 (404)\n请检查 Base URL 和模型名称"}
+                elif response.status_code == 400:
+                    # 某些模型如果参数不对会报 400，但连接是通的
+                    err_msg = response.text
+                    if "image" in err_msg.lower() or "multimodal" in err_msg.lower():
+                         # 如果报错说必须传图片，说明连接其实是通的，只是校验严格
+                         return {"status": "success", "message": f"✅ 连接成功 (模型要求必须传图)"}
+                    return {"status": "error", "message": f"❌ 请求参数错误: {err_msg[:100]}"}
                 else:
-                    return {
-                        "status": "error",
-                        "message": f"❌ API 调用失败 (HTTP {response.status_code})"
-                    }
+                    return {"status": "error", "message": f"❌ API 错误 ({response.status_code}): {response.text[:200]}"}
 
         else:
-            return {
-                "status": "success",
-                "message": f"⚠️ {config.provider} 配置已保存（无法自动测试）"
-            }
+            return {"status": "success", "message": f"⚠️ {config.provider} 配置已保存"}
 
     except httpx.TimeoutException:
-        return {
-            "status": "error",
-            "message": "❌ 请求超时，请检查网络连接"
-        }
+        return {"status": "error", "message": "❌ 请求超时，请检查网络或 URL"}
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"❌ 测试失败: {str(e)}"
-        }
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"❌ 异常: {str(e)}"}
 
 
 @router.post("/config/image/reset")

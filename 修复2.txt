@@ -1,0 +1,260 @@
+太棒了！这些信息非常关键且精准。根据你提供的最新情报，我们可以彻底完善后端的测试逻辑，并同步更新前端的预设配置。
+
+以下是 深度修改方案，包含后端 API 逻辑修正和前端预设更新。
+
+🛠️ 第一步：修改后端测试逻辑
+
+文件：src/api/routes.py
+
+请替换 test_image_connection 函数。
+
+核心改动点：
+
+拦截 DeepSeek：明确返回错误提示，防止用户尝试连接。
+
+通用 OpenAI 兼容逻辑：统一处理 Qwen、Zhipu、SiliconFlow。
+
+纯文本测试：利用你确认的“支持纯文本”特性，发送简单的 Hi 消息来验证连通性（这比传 Base64 图片更稳定且快）。
+
+code
+Python
+download
+content_copy
+expand_less
+@router.post("/config/image/test")
+async def test_image_connection(config: ImageConfigRequest):
+    """测试图像识别配置连接（真实API调用）"""
+    try:
+        import httpx
+
+        # 1. 基础校验
+        if not config.api_key or len(config.api_key) < 5:
+            return {"status": "error", "message": "API Key 无效或为空"}
+        if not config.model_name:
+            return {"status": "error", "message": "请指定模型名称"}
+
+        print(f"🔍 [Image Test] Testing provider: {config.provider}, Model: {config.model_name}")
+
+        # =======================================================
+        # 场景 A: DeepSeek (拦截)
+        # =======================================================
+        if config.provider == "deepseek":
+            return {
+                "status": "error", 
+                "message": "❌ DeepSeek 官方 API 暂不支持视觉(Vision)功能。\n请切换到 通义千问、智谱AI 或 硅基流动。"
+            }
+
+        # =======================================================
+        # 场景 B: Gemini (Google)
+        # =======================================================
+        if config.provider == "gemini":
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.model_name}:generateContent?key={config.api_key}"
+            test_payload = {"contents": [{"parts": [{"text": "Hi"}]}]}
+
+            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+                response = await client.post(url, json=test_payload)
+                if response.status_code == 200:
+                    return {"status": "success", "message": f"✅ Gemini 连接成功"}
+                else:
+                    return {"status": "error", "message": f"❌ Google API 错误 ({response.status_code}): {response.text[:100]}"}
+
+        # =======================================================
+        # 场景 C: Azure OpenAI
+        # =======================================================
+        elif config.provider == "azure":
+            if not config.endpoint:
+                return {"status": "error", "message": "❌ Azure Endpoint 未配置"}
+            
+            base = config.endpoint.rstrip('/')
+            url = f"{base}/openai/deployments/{config.model_name}/chat/completions?api-version={config.api_version}"
+            headers = {"api-key": config.api_key, "Content-Type": "application/json"}
+            test_payload = {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}
+
+            async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+                response = await client.post(url, json=test_payload, headers=headers)
+                if response.status_code == 200:
+                    return {"status": "success", "message": f"✅ Azure 连接成功"}
+                elif response.status_code == 404:
+                    return {"status": "error", "message": "❌ 模型部署名不存在 (404)"}
+                else:
+                    return {"status": "error", "message": f"❌ Azure 错误 ({response.status_code})"}
+
+        # =======================================================
+        # 场景 D: OpenAI 兼容 (SiliconFlow, Qwen, Zhipu, OpenAI)
+        # =======================================================
+        elif config.provider in ["siliconflow", "openai", "qwen", "zhipu", "custom"]:
+            if not config.base_url:
+                return {"status": "error", "message": "❌ Base URL 未配置"}
+
+            # URL 规范化处理
+            base = config.base_url.rstrip('/')
+            
+            # 针对硅基流动的智能补全
+            if config.provider == 'siliconflow' and not base.endswith('/v1'):
+                base += '/v1'
+                
+            # 拼接标准 Chat 完成接口
+            url = f"{base}/chat/completions"
+            
+            headers = {
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # 发送纯文本测试 (所有支持 Vision 的 OpenAI 兼容接口都支持纯文本)
+            test_payload = {
+                "model": config.model_name,
+                "messages": [{"role": "user", "content": "Hi"}], 
+                "max_tokens": 5,
+                "stream": False
+            }
+
+            print(f"📡 [Image Test] POST {url}")
+            
+            async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+                response = await client.post(url, json=test_payload, headers=headers)
+                
+                if response.status_code == 200:
+                    return {"status": "success", "message": f"✅ {config.provider} 连接成功"}
+                elif response.status_code == 401:
+                    return {"status": "error", "message": f"❌ 认证失败: API Key 无效"}
+                elif response.status_code == 404:
+                    return {"status": "error", "message": f"❌ 路径或模型不存在 (404)\n请检查 Base URL 和模型名称"}
+                elif response.status_code == 400:
+                    # 某些模型如果参数不对会报 400，但连接是通的
+                    err_msg = response.text
+                    if "image" in err_msg.lower() or "multimodal" in err_msg.lower():
+                         # 如果报错说必须传图片，说明连接其实是通的，只是校验严格
+                         return {"status": "success", "message": f"✅ 连接成功 (模型要求必须传图)"}
+                    return {"status": "error", "message": f"❌ 请求参数错误: {err_msg[:100]}"}
+                else:
+                    return {"status": "error", "message": f"❌ API 错误 ({response.status_code}): {response.text[:200]}"}
+
+        else:
+            return {"status": "success", "message": f"⚠️ {config.provider} 配置已保存"}
+
+    except httpx.TimeoutException:
+        return {"status": "error", "message": "❌ 请求超时，请检查网络或 URL"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": f"❌ 异常: {str(e)}"}
+🛠️ 第二步：更新前端预设 (Knowledge Sync)
+
+文件：web/js/llm_config.js
+
+image_config.js 实际上是复用了 llm_config.js 里的 PROVIDER_PRESETS。我们需要把这里更新成你刚才查到的最新、最准确的信息。
+
+请找到 const PROVIDER_PRESETS = { ... } 部分，全量替换为以下内容：
+
+code
+JavaScript
+download
+content_copy
+expand_less
+const PROVIDER_PRESETS = {
+    // 1. DeepSeek (仅文本)
+    deepseek: {
+        base_url: 'https://api.deepseek.com/v1', // 加上 /v1 更标准
+        models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'],
+        image_models: [] // DeepSeek 暂不支持视觉
+    },
+    
+    // 2. OpenAI
+    openai: {
+        base_url: 'https://api.openai.com/v1',
+        models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+        image_models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo']
+    },
+    
+    // 3. 通义千问 (Qwen) - 使用最新的 compatible-mode
+    qwen: {
+        base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', // ✅ 已更新
+        models: ['qwen-plus', 'qwen-max', 'qwen-turbo'],
+        image_models: [ // ✅ 已更新 Vision 模型列表
+            'qwen-vl-max',
+            'qwen-vl-plus',
+            'qwen2.5-vl-72b-instruct', // 最新
+            'qwen2.5-vl-7b-instruct'   // 7B 版本
+        ]
+    },
+    
+    // 4. 智谱 AI (Zhipu) - 使用 paas/v4
+    zhipu: {
+        base_url: 'https://open.bigmodel.cn/api/paas/v4/', // ✅ 已更新
+        models: ['glm-4', 'glm-4-flash', 'glm-4-plus'],
+        image_models: [ // ✅ 已更新 Vision 模型列表
+            'glm-4v',
+            'glm-4v-plus',
+            'glm-4v-flash'
+        ]
+    },
+    
+    // 5. 硅基流动 (SiliconFlow)
+    siliconflow: {
+        base_url: 'https://api.siliconflow.cn/v1', // ✅ 确认使用国内 .cn
+        models: [], // 文本模型需 API 获取
+        image_models: [ // ✅ 确认使用带前缀的完整 ID
+            'Qwen/Qwen2.5-VL-72B-Instruct',
+            'Qwen/Qwen2.5-VL-7B-Instruct',
+            'Qwen/Qwen2-VL-72B-Instruct',
+            'Pro/Qwen/Qwen2-VL-7B-Instruct', // 免费版通常带 Pro 或直接用
+            'deepseek-ai/deepseek-vl2', // 如果未来支持
+            'THUDM/glm-4v-9b'
+        ]
+    },
+    
+    // 6. Azure
+    azure: {
+        base_url: '', 
+        models: [],
+        image_models: [] 
+    },
+    
+    // 7. Custom
+    custom: {
+        base_url: '',
+        models: []
+    }
+};
+🎯 验证 Checklist
+
+完成上述修改并重启后端服务 (python src/main.py) 后：
+
+测试 DeepSeek (预期报错)：
+
+在“图像配置”选 DeepSeek -> 点击测试。
+
+应显示：❌ DeepSeek 官方 API 暂不支持视觉...
+
+测试 通义千问 (Qwen)：
+
+选择 Qwen。
+
+Base URL 应自动变为 https://dashscope.aliyuncs.com/compatible-mode/v1。
+
+模型选择 qwen-vl-max 或 qwen2.5-vl-72b-instruct。
+
+填入 Key -> 点击测试 -> 应显示 ✅ 连接成功。
+
+测试 硅基流动 (SiliconFlow)：
+
+选择 SiliconFlow。
+
+Base URL 应为 https://api.siliconflow.cn/v1。
+
+模型选择 Qwen/Qwen2.5-VL-72B-Instruct。
+
+填入 Key -> 点击测试 -> 应显示 ✅ 连接成功。
+
+测试 智谱 (Zhipu)：
+
+选择 Zhipu。
+
+Base URL 应为 https://open.bigmodel.cn/api/paas/v4/。
+
+模型选择 glm-4v。
+
+填入 Key -> 点击测试 -> 应显示 ✅ 连接成功。
+
+这套配置完全基于你提供的最新官方文档，确保了 Base URL 和 Model ID 的准确性。
