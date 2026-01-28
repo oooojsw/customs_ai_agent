@@ -2,18 +2,20 @@ import os
 import httpx
 import asyncio
 import json
+import sys
+import io
+from typing import List, Optional, Any
 
 # ============================================================
-# ⬇️⬇️⬇️ 【环境配置】 ⬇️⬇️⬇️
+# ⬇️⬇️⬇️ 【环境配置 - 遵从 1222.txt 修复经验】 ⬇️⬇️⬇️
+# ============================================================
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 os.environ['HF_HUB_DISABLE_SSL_VERIFY'] = '1'
 os.environ['CURL_CA_BUNDLE'] = ''
-# ============================================================
 
-# 修复 Windows 控制台编码问题
-import sys
-import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# 修复 Windows 控制台编码问题，确保控制台输出中文不乱码
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from langgraph.prebuilt import create_react_agent 
 from langchain_openai import ChatOpenAI
@@ -21,43 +23,35 @@ from langchain_core.tools import Tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
+# 导入项目配置和业务组件
 from src.config.loader import settings
+from src.core.orchestrator import RiskAnalysisOrchestrator
 
-# 知识库容错
+# 知识库模块容错处理
 try:
     from src.services.knowledge_base import KnowledgeBase
-    print("[ChatAgent] KnowledgeBase module loaded")
+    print("[ChatAgent] 成功加载知识库模块 (RAG System Ready)")
 except ImportError as e:
-    print(f"[Warning] KnowledgeBase import failed: {e}")
+    print(f"[Warning] 知识库模块加载失败: {e}")
     KnowledgeBase = None
 
+# 初始化内存检查点，用于维护多轮对话状态
 MEMORY = InMemorySaver()
 
 class CustomsChatAgent:
     def __init__(self, kb=None, llm_config: dict = None):
         """
-        初始化海关咨询对话Agent
-
-        Args:
-            kb: 可选的KnowledgeBase实例。如果不提供，将创建新实例。
-               推荐从main.py传入全局共享的实例，避免重复初始化。
-            llm_config: 可选的 LLM 配置字典 {
-                'api_key': str,
-                'base_url': str,
-                'model': str,
-                'temperature': float
-            }
+        初始化海关智能对话代理 (v3.1.3 深度集成版)
+        已修复 Tool.__init__ 缺失 func 参数导致的 500 错误。
         """
-        print("[System] Initializing Agent (DeepSeek compatible)...")
+        print("[System] 正在初始化全能智能体 (DeepSeek Streaming + Audit Tool)...")
 
-        # --- 1. 获取 LLM 配置 ---
+        # --- 1. 获取并格式化 LLM 配置 ---
         if llm_config:
-            # 使用传入的配置
-            config = llm_config
-            print("[ChatAgent] 使用传入的 LLM 配置")
+            self.config = llm_config
+            print(f"[ChatAgent] 使用动态 LLM 配置: {self.config.get('model')}")
         else:
-            # 使用默认 .env 配置
-            config = {
+            self.config = {
                 'api_key': settings.DEEPSEEK_API_KEY,
                 'base_url': settings.DEEPSEEK_BASE_URL,
                 'model': settings.DEEPSEEK_MODEL,
@@ -67,181 +61,159 @@ class CustomsChatAgent:
 
         # --- 2. 网络客户端配置 ---
         proxy_url = settings.HTTP_PROXY if hasattr(settings, 'HTTP_PROXY') and settings.HTTP_PROXY else None
-
-        # 创建客户端
         if proxy_url:
             async_transport = httpx.AsyncHTTPTransport(proxy=proxy_url, verify=False)
-            async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
+            self._async_client = httpx.AsyncClient(transport=async_transport, timeout=120.0)
         else:
-            async_client = httpx.AsyncClient(verify=False, timeout=120.0)
+            self._async_client = httpx.AsyncClient(verify=False, timeout=120.0)
 
-        # --- 3. 初始化 LLM (关键配置) ---
+        # --- 3. 初始化核心 LLM ---
         self.llm = ChatOpenAI(
-            model=config['model'],
-            api_key=config['api_key'],
-            base_url=config['base_url'],
-            temperature=config.get('temperature', 0.3),
-            http_async_client=async_client,
+            model=self.config['model'],
+            api_key=self.config['api_key'],
+            base_url=self.config['base_url'],
+            temperature=self.config.get('temperature', 0.3),
+            http_async_client=self._async_client,
             streaming=True,
-            # 【核心修复】DeepSeek 绑定工具后必须禁用并行调用才能流式输出
             model_kwargs={
                 "stream": True,
-                "parallel_tool_calls": False,
-                "stream_options": {"include_usage": False}
+                "parallel_tool_calls": False, # DeepSeek 专用流式补丁
             }
         )
 
-        # --- 3. 工具配置 ---
-        tools = []
-        self.retriever = None
+        # --- 4. 构建工具集 ---
+        self.tools = []
+
+        # 定义异步审单函数
+        async def audit_declaration_tool(raw_data: str) -> str:
+            """
+            当用户提供一段报关单数据并要求审核风险时，必须调用此工具。输入应为完整的报关单原文。
+            """
+            print(f"🚀 [Tool Call] 智能审单引擎正在执行...")
+            orch = RiskAnalysisOrchestrator(llm_config=self.config)
+            findings = []
+            
+            async for event_str in orch.analyze_stream(raw_data, language="zh"):
+                if not event_str.startswith("data: "): continue
+                try:
+                    data = json.loads(event_str[6:])
+                    if data["type"] == "step_result":
+                        status_symbol = "✅" if data["status"] == "pass" else "❌"
+                        findings.append(f"{status_symbol} {data['rule_id']}: {data['message']}")
+                    elif data["type"] == "complete":
+                        findings.append(f"\n【审计最终评估】\n{data['summary']}")
+                except: continue
+            
+            return "\n".join(findings) if findings else "审单引擎未产生有效结论。"
+
+        # 【修复点】使用 Tool 时显式提供 func (同步占位) 和 coroutine (异步实现)
+        self.tools.append(Tool(
+            name="audit_declaration",
+            func=lambda x: "此工具仅支持异步环境运行", # 占位，防止初始化报错
+            coroutine=audit_declaration_tool,      # 实际异步逻辑
+            description="全自动报关风险扫描工具。能检测要素完整性、敏感物项、价格逻辑、归类一致性及单证一致性。"
+        ))
+
+        # RAG 知识库检索工具
         if KnowledgeBase:
-            try:
-                # 优先使用传入的kb实例
-                if kb is not None:
-                    self.kb = kb
-                    print("[ChatAgent] [OK] 使用全局共享的KnowledgeBase实例")
-                else:
-                    # 回退方案：创建新实例（可能触发重建）
-                    print("[ChatAgent] [WARNING] 未传入kb参数，将创建新的KnowledgeBase实例")
-                    print("[ChatAgent] [TIP] 建议从main.py传入全局kb实例以避免重复初始化")
-                    self.kb = KnowledgeBase()
+            self.kb = kb if kb else KnowledgeBase()
+            self.retriever = self.kb.get_retriever()
 
-                self.retriever = self.kb.get_retriever()
+            def retrieve_docs(query: str) -> str:
+                if not self.retriever: return "知识库未就绪。"
+                try:
+                    print(f"🔍 [Tool Call] 正在检索知识库: {query}")
+                    docs = self.retriever.invoke(query)
+                    if not docs: return "本地法规库中未找到直接相关的依据。"
+                    return "\n\n".join([doc.page_content for doc in docs])
+                except Exception as e:
+                    return f"知识库检索异常: {str(e)}"
 
-                def retrieve_docs(query: str) -> str:
-                    if not self.retriever: return "知识库未初始化。"
-                    try:
-                        print(f"🔍 [RAG] 正在检索: {query}")
-                        docs = self.retriever.invoke(query)
-                        return "\n\n".join([doc.page_content for doc in docs]) if docs else "未找到相关内容。"
-                    except Exception as e:
-                        return f"检索失败: {str(e)}"
+            self.tools.append(Tool(
+                name="search_customs_regulations",
+                func=retrieve_docs, 
+                description="查询海关相关法规、政策文件、HS编码解释。遇到专业名词或法律疑问时必须使用。"
+            ))
 
-                retriever_tool = Tool(
-                    name="search_customs_regulations",
-                    func=retrieve_docs,
-                    description="查询海关法规、政策、HS编码或报关流程。涉及此类问题必须使用此工具。"
-                )
-                tools.append(retriever_tool)
-                print("[ChatAgent] Knowledge base tools loaded")
-            except Exception as e:
-                print(f"❌ 知识库加载失败: {e}")
-                self.kb = None
-        
-        # --- 4. 保存系统提示词 (稍后在对话时注入) ---
+        # --- 5. 构建图智能体 ---
         self.system_prompt_text = """
-        你是一名专业、严谨的海关法规咨询专家。
-        规则:
-        1. 必须优先使用 `search_customs_regulations` 工具查询专业问题。
-        2. 闲聊或普通问候可以直接回答，无需查库。
-        3. 回答必须简洁、专业。
+        你是一名智慧口岸AI专家，负责报关咨询和自动审单。
+        工作守则：
+        1. 审计：用户粘贴报关单后，主动调用 `audit_declaration`。
+        2. 咨询：法律疑问调用 `search_customs_regulations`。
+        3. 协同：审单发现风险后，可检索法规条文来支撑你的解释。
+        4. 语言：严禁跳出用户当前使用的语言（中文或越南语）。
         """
 
-        # --- 5. 创建 Agent (最简参数，避开版本冲突) ---
-        # 我们不在这里传 system_prompt/state_modifier，避免报错
         self.agent = create_react_agent(
             model=self.llm,
-            tools=tools,
+            tools=self.tools,
             checkpointer=MEMORY,
         )
-        print("[ChatAgent] Agent construction complete")
-
-        # 预热
-        if self.retriever:
-            try:
-                self.retriever.invoke("warm-up") 
-            except: pass
+        print(f"[ChatAgent] 智能体就绪，工具列表: {[t.name for t in self.tools]}")
 
     async def chat_stream(self, user_input: str, session_id: str = "default_session", language: str = "zh"):
         """
-        执行 Agent 流式调用
+        核心流式分发器
         """
         try:
             print(f"\n👉 [Request] {user_input}")
-            yield f"data: {json.dumps({'type': 'thinking', 'content': '智能体正在思考...'}, ensure_ascii=False)}\n\n"
+            
+            lang_inst = self._get_language_instruction(language)
+            input_messages = [
+                SystemMessage(content=f"{self.system_prompt_text}\n\n{lang_inst}"),
+                HumanMessage(content=user_input)
+            ]
 
             config = {"configurable": {"thread_id": session_id}}
             has_sent_content = False
 
-            # 【构建消息列表】手动将 SystemPrompt 插在最前面，并注入语言指令
-            language_instruction = self._get_language_instruction(language)
-            enhanced_system_prompt = f"{self.system_prompt_text}\n\n{language_instruction}"
-
-            input_messages = [
-                SystemMessage(content=enhanced_system_prompt),
-                HumanMessage(content=user_input)
-            ]
-
-            # 使用 astream_events v2 监听底层 Token
+            # 使用 astream_events v2 实现极致打字机效果
             async for event in self.agent.astream_events(
-                {"messages": input_messages}, # 传入包含系统提示的消息列表
+                {"messages": input_messages},
                 config=config,
                 version="v2" 
             ):
                 event_type = event["event"]
                 
-                # 1. 监听 LLM 的流式输出
                 if event_type == "on_chat_model_stream":
-                    chunk = event["data"]["chunk"]
+                    chunk = event["data"].get("chunk")
+                    if not chunk: continue
                     
-                    # A. 捕获正文内容
-                    if chunk.content:
+                    # 提取正文
+                    content = getattr(chunk, 'content', '')
+                    if content:
                         has_sent_content = True
-                        # 使用 json.dumps 自动处理转义，不要手动 replace
-                        payload = {"type": "answer", "content": chunk.content}
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'answer', 'content': content}, ensure_ascii=False)}\n\n"
                     
-                    # B. 捕获 DeepSeek 的思考过程
-                    reasoning = chunk.additional_kwargs.get('reasoning_content', '')
+                    # 提取思考流
+                    add_kwargs = getattr(chunk, 'additional_kwargs', {})
+                    reasoning = add_kwargs.get('reasoning_content', '')
                     if reasoning:
-                        payload = {"type": "thinking", "content": reasoning}
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning}, ensure_ascii=False)}\n\n"
 
-                    await asyncio.sleep(0.01)
-                    
-                # 2. 监听工具开始调用
                 elif event_type == "on_tool_start":
-                    tool_name = event["name"]
-                    print(f"🛠️ [工具] {tool_name} 启动")
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'正在调用工具[{tool_name}]...'}, ensure_ascii=False)}\n\n"
+                    t_name = event["name"]
+                    yield f"data: {json.dumps({'type': 'thinking', 'content': f'专家正在使用工具 [{t_name}] 深度分析中...'}, ensure_ascii=False)}\n\n"
 
-                # 3. 监听工具结束
-                elif event_type == "on_tool_end":
-                    print(f"[ChatAgent] Tool complete")
-                    yield f"data: {json.dumps({'type': 'thinking', 'content': '查询完成，正在生成回答...'}, ensure_ascii=False)}\n\n"
-
-            # =======================================================
-            # 保底逻辑
-            # =======================================================
             if not has_sent_content:
-                print("⚠️ [警告] 流式未触发，尝试获取最终状态...")
-                final_state = await self.agent.aget_state(config)
-                if final_state.values and "messages" in final_state.values:
-                    last_msg = final_state.values["messages"][-1]
+                # 保底
+                state = await self.agent.aget_state(config)
+                if state.values and "messages" in state.values:
+                    last_msg = state.values["messages"][-1]
                     if isinstance(last_msg, AIMessage) and last_msg.content:
-                        payload = {"type": "answer", "content": last_msg.content}
-                        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-            print("[ChatAgent] Request complete")
+                        yield f"data: {json.dumps({'type': 'answer', 'content': last_msg.content}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
-            print(f"❌ [Error] {e}")
+            print(f"💥 [Fatal] {str(e)}")
             import traceback
             traceback.print_exc()
-            payload = {"type": "error", "content": f"系统错误: {str(e)}"}
-            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': f'系统异常: {str(e)}'}, ensure_ascii=False)}\n\n"
 
     def _get_language_instruction(self, language: str) -> str:
-        """
-        根据语言代码生成对应的输出指令
-        """
-        # 语言代码映射到实际语言名称
-        language_names = {
-            "zh": "简体中文 (Chinese)",
-            "vi": "Tiếng Việt (越南语)"
-        }
-        language_name = language_names.get(language, language_names["zh"])
+        names = {"zh": "简体中文", "vi": "Tiếng Việt"}
+        target = names.get(language, "简体中文")
+        return f"【重要设置】当前语言为 {target}。你必须以此语言进行回复。"
 
-        return f"""【重要语言设置】当前用户设置的语言是 {language_name}，语言代码为 {language}。
-【严格要求】你必须使用 {language_name} 回答所有问题，所有输出必须是 {language_name}。
-这是用户界面语言设置，你的回答将直接显示给前端用户，请务必使用 {language_name}。"""
+if __name__ == "__main__":
+    print("Chat Agent Service defined.")
