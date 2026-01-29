@@ -38,6 +38,7 @@ const translations = {
         // 工具调用状态
         tool_audit_declaration: '智能审单',
         tool_search_customs_regulations: '法规检索',
+        tool_query_exchange_rate: '汇率查询',
         tool_calling: '正在调用工具',
         tool_call_done: '调用完毕',
 
@@ -175,6 +176,7 @@ const translations = {
         // 工具调用状态
         tool_audit_declaration: 'Kiểm tra hải quan',
         tool_search_customs_regulations: 'Tra cứu quy chế',
+        tool_query_exchange_rate: 'Tra cứu tỷ giá',
         tool_calling: 'Đang gọi công cụ',
         tool_call_done: 'Hoàn thành',
 

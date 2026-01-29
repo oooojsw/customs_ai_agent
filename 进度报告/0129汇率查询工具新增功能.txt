@@ -1,0 +1,413 @@
+========================================
+进度报告 - 汇率查询工具新增功能
+========================================
+日期：2026-01-29
+功能：为功能二（智能体）添加中行汇率查询工具
+
+========================================
+一、需求概述
+========================================
+
+用户需求：
+根据"接口规范/中行汇率查询api规范.md"文档，为功能二（咨询/智能体模块）添加一个新的汇率查询工具。
+
+目标功能：
+- 用户可以通过自然语言查询汇率
+- 支持中英文货币名称输入
+- 自动进行金额换算
+- 数据来源：中国银行（每刻报销API）
+
+========================================
+二、技术实现
+========================================
+
+【1. API接口规范】
+
+接口地址：https://openapi-ng.maycur.com/api/openapi/currency/sys-exchange-rate
+请求方式：POST
+认证：无需API密钥
+
+请求参数：
+```json
+{
+  "data": {
+    "from": "USD",
+    "to": "CNY",
+    "effectiveDate": 1689830100000
+  }
+}
+```
+
+响应示例：
+```json
+{
+  "success": true,
+  "data": [{
+    "fromCurrency": "USD",
+    "toCurrency": "CNY",
+    "exchangeRate": 7.0850,
+    "rateType": "SYSTEM",
+    "startedAt": 1689782414000
+  }]
+}
+```
+
+【2. 工具注册机制】
+
+基于功能二（chat_agent.py）的现有工具注册模式：
+- audit_declaration - 智能审单工具（异步）
+- search_customs_regulations - 法规检索工具（同步）
+- **query_exchange_rate - 汇率查询工具（同步）[新增]**
+
+【3. 核心实现】
+
+新增文件：无（在现有文件中添加）
+修改文件：
+1. src/services/chat_agent.py
+2. web/js/i18n.js
+
+实现步骤：
+
+步骤1：添加导入语句（第7-9行）
+```python
+import requests  # HTTP请求库
+import time       # 时间戳生成
+import re         # 正则表达式
+```
+
+步骤2：添加货币代码映射表（第90-109行）
+```python
+self.CURRENCY_MAP = {
+    # 中文常见货币名称
+    "美元": "USD", "人民币": "CNY", "欧元": "EUR", "英镑": "GBP", "日元": "JPY",
+    "港币": "HKD", "澳元": "AUD", "加元": "CAD", "瑞郎": "CHF", "卢布": "RUB",
+    "韩元": "KRW", "新币": "SGD", "纽元": "NZD",
+
+    # 英文货币名称
+    "dollar": "USD", "usd": "USD",
+    "yuan": "CNY", "cny": "CNY", "rmb": "CNY",
+    "euro": "EUR", "eur": "EUR",
+    "pound": "GBP", "gbp": "GBP",
+    "yen": "JPY", "jpy": "JPY",
+
+    # ISO代码
+    "USD": "USD", "CNY": "CNY", "EUR": "EUR", "GBP": "GBP", "JPY": "JPY",
+    "HKD": "HKD", "AUD": "AUD", "CAD": "CAD", "CHF": "CHF"
+}
+```
+
+步骤3：添加API调用辅助函数（第112-150行）
+```python
+def _fetch_exchange_rate(from_currency: str, to_currency: str) -> dict:
+    """调用每刻报销API查询汇率"""
+    url = 'https://openapi-ng.maycur.com/api/openapi/currency/sys-exchange-rate'
+    timestamp_ms = int(time.time() * 1000)
+
+    payload = {
+        'data': {
+            'from': from_currency,
+            'to': to_currency,
+            'effectiveDate': timestamp_ms
+        }
+    }
+
+    try:
+        response = requests.post(url, json=payload,
+                                headers={'Content-Type': 'application/json'},
+                                timeout=10)
+        result = response.json()
+
+        if result.get('success') and result.get('data'):
+            rate_data = result['data'][0]
+            return {
+                'success': True,
+                'rate': rate_data['exchangeRate'],
+                'from': rate_data['fromCurrency'],
+                'to': rate_data['toCurrency'],
+                'source': '中国银行' if rate_data['rateType'] == 'SYSTEM' else '自定义',
+                'timestamp': rate_data['startedAt']
+            }
+        else:
+            return {'success': False, 'error': result.get('message', '未找到汇率数据')}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+```
+
+步骤4：添加结果格式化函数（第152-177行）
+```python
+def _format_exchange_rate_result(data: dict, amount: float = None) -> str:
+    """格式化汇率查询结果为易读的字符串"""
+    if not data['success']:
+        return f"❌ 汇率查询失败：{data.get('error', '未知错误')}"
+
+    rate = data['rate']
+    from_curr = data['from']
+    to_curr = data['to']
+    source = data['source']
+
+    lines = [
+        f"💱 汇率查询结果",
+        f"{'─' * 20}",
+        f"货币对: {from_curr} → {to_curr}",
+        f"汇率: 1 {from_curr} = {rate:.4f} {to_curr}",
+        f"数据来源: {source}",
+    ]
+
+    if amount is not None:
+        converted = amount * rate
+        lines.append(f"\n💰 换算结果:")
+        lines.append(f"{amount:.2f} {from_curr} = {converted:.2f} {to_curr}")
+
+    return "\n".join(lines)
+```
+
+步骤5：添加汇率查询工具函数（第231-272行）
+```python
+def query_exchange_rate_tool(query: str) -> str:
+    """
+    查询中国银行实时汇率（数据来源：每刻报销API）
+    """
+    # 1. 提取货币代码
+    from_curr = None
+    to_curr = None
+    amount = None
+
+    # 提取金额（数字）
+    amount_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:元|美元|欧元|英镑|日元|人民币|USD|EUR|GBP|JPY|CNY|HKD|AUD|CAD)', query)
+    if amount_match:
+        amount = float(amount_match.group(1))
+
+    # 提取货币代码
+    query_lower = query.lower()
+    for name, code in self.CURRENCY_MAP.items():
+        if name.lower() in query_lower:
+            if from_curr is None:
+                from_curr = code
+            elif to_curr is None and code != from_curr:
+                to_curr = code
+
+    # 如果只找到一种货币，默认兑CNY
+    if from_curr and not to_curr:
+        to_curr = "CNY" if from_curr != "CNY" else "USD"
+
+    # 如果都没找到，返回提示
+    if not from_curr:
+        return "❌ 无法识别货币类型，请明确说明要查询的货币（如：美元、欧元、人民币等）"
+
+    # 2. 调用API查询汇率
+    print(f"💱 [Tool Call] 正在查询汇率: {from_curr} → {to_curr}")
+    result = _fetch_exchange_rate(from_curr, to_curr)
+
+    # 3. 格式化结果
+    return _format_exchange_rate_result(result, amount)
+```
+
+步骤6：注册工具到工具列表（第274-278行）
+```python
+self.tools.append(Tool(
+    name="query_exchange_rate",
+    func=query_exchange_rate_tool,
+    description="查询实时汇率信息（数据来源：中国银行）。当用户询问货币汇率、货币兑换、汇率换算等问题时必须调用此工具。支持中英文货币名称输入，如'USD到CNY'、'美元兑人民币'、'100美元等于多少人民币'。"
+))
+```
+
+步骤7：更新系统提示词（第281-289行）
+```python
+self.system_prompt_text = """
+你是一名智慧口岸AI专家，负责报关咨询和自动审单。
+工作守则：
+1. 审计：用户粘贴报关单后，主动调用 `audit_declaration`。
+2. 咨询：法律疑问调用 `search_customs_regulations`。
+3. 汇率：用户询问货币汇率、兑换、换算时，调用 `query_exchange_rate`。
+4. 协同：审单发现风险后，可检索法规条文来支撑你的解释。
+5. 语言：严禁跳出用户当前使用的语言（中文或越南语）。
+"""
+```
+
+步骤8：添加前端国际化文本
+
+中文（web/js/i18n.js 第41行）：
+```javascript
+tool_query_exchange_rate: '汇率查询',
+```
+
+越南语（web/js/i18n.js 第179行）：
+```javascript
+tool_query_exchange_rate: 'Tra cứu tỷ giá',
+```
+
+========================================
+三、测试验证
+========================================
+
+【测试环境】
+
+服务器启动：
+- 命令：python src/main.py
+- 端口：8000
+- 访问：http://127.0.0.1:8000
+
+启动日志（关键信息）：
+```
+[ChatAgent] 智能体就绪，工具列表: ['audit_declaration', 'search_customs_regulations', 'query_exchange_rate']
+```
+✅ 新工具已成功注册到工具列表
+
+【测试场景】
+
+场景1：基础汇率查询（计划中，待用户验证）
+用户输入: "USD到CNY的汇率是多少？"
+预期行为: AI调用 query_exchange_rate 工具
+预期输出:
+```
+💱 汇率查询结果
+────────────────────
+货币对: USD → CNY
+汇率: 1 USD = 7.xxxx CNY
+数据来源: 中国银行
+```
+
+场景2：带金额的汇率换算（计划中，待用户验证）
+用户输入: "100美元能换多少人民币？"
+预期行为: AI调用工具并提取金额
+预期输出:
+```
+💱 汇率查询结果
+────────────────────
+货币对: USD → CNY
+汇率: 1 USD = 7.xxxx CNY
+数据来源: 中国银行
+
+💰 换算结果:
+100.00 USD = 7xx.xx CNY
+```
+
+场景3：中文货币名称（计划中，待用户验证）
+用户输入: "欧元兑人民币的汇率"
+预期行为: 正确识别"欧元"→EUR，"人民币"→CNY
+预期输出: 显示 EUR → CNY 汇率
+
+场景4：单一货币查询（计划中，待用户验证）
+用户输入: "美元汇率"
+预期行为: 默认查询 USD → CNY
+预期输出: 显示 USD → CNY 汇率
+
+场景5：ISO货币代码（计划中，待用户验证）
+用户输入: "JPY到CNY"
+预期行为: 识别 JPY（日元）和 CNY
+预期输出: 显示 JPY → CNY 汇率
+
+【技术验证】
+
+✅ 导入语句正确添加
+✅ 货币映射表完整定义
+✅ API调用函数逻辑正确
+✅ 结果格式化输出清晰
+✅ 工具注册成功
+✅ 系统提示词已更新
+✅ 前端国际化文本已添加
+✅ 服务器正常启动
+✅ 工具列表包含新工具
+
+========================================
+四、技术亮点
+========================================
+
+【1. NLP货币识别】
+- 支持中英文货币名称（美元/USD、欧元/EUR等）
+- 支持货币简称（dollar、yuan、euro等）
+- 自动识别货币对
+- 提取换算金额
+- 智能默认CNY目标货币
+
+【2. API集成】
+- 同步requests调用
+- 10秒超时控制
+- 完善的异常处理
+- 毫秒级时间戳生成
+- 数据来源标识
+
+【3. 结果格式化】
+- 清晰的分层输出
+- 金额换算计算
+- 数据来源标识
+- 错误信息友好
+- 表情符号增强可读性
+
+【4. 工具注册规范】
+- 遵循LangChain Tool规范
+- 清晰的description描述
+- 同步函数实现
+- 集成到现有工具列表
+- 与现有工具无缝协作
+
+========================================
+五、修改文件清单
+========================================
+
+1. **src/services/chat_agent.py**
+   - 第7-9行：添加导入（requests, time, re）
+   - 第90-109行：添加 CURRENCY_MAP 货币映射表
+   - 第112-150行：添加 _fetch_exchange_rate() API调用函数
+   - 第152-177行：添加 _format_exchange_rate_result() 格式化函数
+   - 第231-272行：添加 query_exchange_rate_tool() 工具函数
+   - 第274-278行：注册工具到 self.tools
+   - 第281-289行：更新系统提示词
+
+2. **web/js/i18n.js**
+   - 第41行：添加中文 tool_query_exchange_rate
+   - 第179行：添加越南语 tool_query_exchange_rate
+
+========================================
+六、预期效果
+========================================
+
+✅ 用户可以通过自然语言查询汇率
+✅ 支持中英文货币名称输入
+✅ 自动进行金额换算
+✅ 数据来源：中国银行（实时汇率）
+✅ 错误处理完善，提示信息友好
+✅ 与现有工具无缝集成
+✅ 支持中文和越南语界面显示
+
+========================================
+七、后续建议
+========================================
+
+1. **扩展货币支持**
+   - 可以添加更多货币名称（越南语、韩语等）
+   - 支持更多小语种货币
+
+2. **历史汇率查询**
+   - 修改API调用，支持指定历史日期
+   - 添加汇率走势图表
+
+3. **缓存机制**
+   - 缓存汇率查询结果（如5分钟内有效）
+   - 减少API调用次数，提升响应速度
+
+4. **多数据源**
+   - 支持多个汇率数据源
+   - 对比不同来源的汇率
+
+========================================
+八、已知限制
+========================================
+
+1. **API依赖**
+   - 依赖每刻报销API的可用性
+   - 如果API服务中断，工具将无法使用
+
+2. **货币识别**
+   - 仅支持常见货币（USD, EUR, GBP, JPY, CNY等）
+   - 不支持的货币会返回错误提示
+
+3. **网络延迟**
+   - 每次查询都需要调用外部API
+   - 网络状况会影响响应速度
+
+========================================
+完成时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：✅ 开发完成，待用户测试验证
+========================================

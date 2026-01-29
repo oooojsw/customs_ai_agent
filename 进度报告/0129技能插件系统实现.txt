@@ -1,0 +1,201 @@
+========================================
+进度记录 - 2026-01-29
+========================================
+
+【实现项目】技能插件系统（Skill Plugin System）
+
+一、需求概述
+------------
+
+在现有的海关AI代理系统中新增动态技能（Skill）系统，允许通过添加Markdown配置文件动态扩展Agent能力，无需修改核心代码。
+
+核心目标：
+1. 插件化架构：通过data/skills/目录下的SKILL.md文件定义新技能
+2. 动态加载：启动时自动扫描并注册技能
+3. 工具调用：通过use_skill工具动态激活技能
+4. 提示词注入：自动将技能清单注入System Prompt
+
+
+二、技术实现
+------------
+
+1. 新增文件
+
+   (1) src/services/skill_manager.py - 技能管理器核心类
+       - SkillManager类：负责技能的发现、加载和查询
+       - _discover_skills()：扫描data/skills/目录，自动发现技能
+       - _parse_skill_md()：解析SKILL.md文件的YAML frontmatter和正文
+       - get_skill_registry_text()：生成技能清单文本（注入System Prompt）
+       - load_skill_content()：加载指定技能的操作手册内容
+
+   (2) data/skills/hs_code_advisor/SKILL.md - HS编码归类顾问技能
+       - 技能描述：帮助用户查询商品的HS编码
+       - 工作流程：提取商品要素 → 归类原则应用 → 编码建议
+       - 输出格式：HS编码 + 归类依据 + 风险提示
+
+   (3) data/skills/tax_calculator/SKILL.md - 进口税费计算器技能
+       - 技能描述：估算进口商品的关税和增值税
+       - 计算公式：关税、增值税、消费税、总税额
+       - 输出格式：税费明细 + 税负占比
+
+2. 修改文件
+
+   src/services/chat_agent.py - 集成技能系统（4处修改）
+
+   (1) 第41-47行：添加SkillManager导入模块
+       ```python
+       try:
+           from src.services.skill_manager import SkillManager
+           print("[ChatAgent] 成功加载技能管理器模块")
+       except ImportError as e:
+           print(f"[Warning] 技能管理器模块加载失败: {e}")
+           SkillManager = None
+       ```
+
+   (2) 第263-270行：初始化技能管理器
+       ```python
+       if SkillManager:
+           self.skill_manager = SkillManager()
+           skills_registry = self.skill_manager.get_skill_registry_text()
+       else:
+           self.skill_manager = None
+           skills_registry = "技能系统未就绪"
+       ```
+
+   (3) 第323-371行：注册use_skill工具
+       - 工具名称：use_skill
+       - 参数：skill_name（技能名称）、query（用户问题）
+       - 功能：加载技能手册并注入到System Prompt中
+
+   (4) 第373-394行：更新System Prompt
+       - 添加【扩展能力中心】章节
+       - 显示可用技能列表
+       - 说明技能调度策略
+
+
+三、技能文件格式
+----------------
+
+SKILL.md文件采用YAML frontmatter + Markdown正文格式：
+
+```markdown
+---
+name: skill_name
+description: 技能描述（一句话说明）
+---
+
+# 技能标题
+
+你是一名...
+
+## 工作流程
+1. 第一步
+2. 第二步
+
+## 输出格式
+```
+
+格式说明：
+- YAML frontmatter：定义技能元数据（name, description）
+- Markdown正文：定义技能的工作流程、输出格式、注意事项
+
+
+四、测试验证
+------------
+
+测试1：技能管理器基础功能
+- ✅ 成功加载2个技能（hs_code_advisor, tax_calculator）
+- ✅ 技能清单正确生成
+- ✅ 技能内容正确加载（工作流程、输出格式等）
+- ✅ 错误处理正常（技能不存在时返回友好提示）
+
+测试2：ChatAgent集成
+- ✅ skill_manager初始化成功
+- ✅ use_skill工具已注册到工具列表
+- ✅ System Prompt包含【扩展能力中心】章节
+- ✅ 工具调用成功（可以加载技能内容）
+
+测试3：技能内容验证
+- ✅ hs_code_advisor包含完整工作流程
+  * 提取商品要素（品名、材质、用途、功能、加工工艺）
+  * 归类原则应用（查阅税则、应用归类总规则、参考归类决定）
+  * 编码建议（HS编码 + 归类依据 + 风险提示）
+
+- ✅ tax_calculator包含完整计算公式
+  * 关税 = 完税价格 × 关税率
+  * 增值税 = (完税价格 + 关税) × 增值税率
+  * 消费税 = (完税价格 + 关税) / (1 - 消费税率) × 消费税率
+  * 总税额 = 关税 + 增值税 + 消费税
+
+
+五、启动验证
+------------
+
+服务器启动日志：
+```
+[ChatAgent] 成功加载知识库模块 (RAG System Ready)
+[ChatAgent] 成功加载技能管理器模块
+[SkillManager] [OK] 已加载技能: hs_code_advisor - 帮助用户查询商品的HS编码。当用户询问商品归类、税号或编码时使用。
+[SkillManager] [OK] 已加载技能: tax_calculator - 估算进口商品的关税和增值税。当用户询问"这货要交多少税"时使用。
+[ChatAgent] 技能清单已加载:
+- hs_code_advisor: 帮助用户查询商品的HS编码。当用户询问商品归类、税号或编码时使用。
+- tax_calculator: 估算进口商品的关税和增值税。当用户询问"这货要交多少税"时使用。
+[ChatAgent] 智能体就绪，工具列表: ['audit_declaration', 'search_customs_regulations', 'use_skill']
+```
+
+
+六、预期效果
+------------
+
+用户体验：
+1. ✅ 添加新技能只需在data/skills/创建新目录和SKILL.md
+2. ✅ 重启服务自动生效，无需修改代码
+3. ✅ 技能描述自动注入System Prompt
+4. ✅ LLM可根据用户意图自动调用use_skill工具
+5. ✅ 支持无限扩展技能数量
+
+技术优势：
+1. 插件化设计 - 通过配置文件动态扩展能力
+2. YAML frontmatter - 标准化的技能元数据格式
+3. 自动发现机制 - 启动时自动扫描并注册技能
+4. 热插拔支持 - 添加/删除技能无需修改代码
+5. 提示词注入 - 自动将技能清单融入System Prompt
+
+
+七、修改文件清单
+----------------
+
+新增文件：
+1. src/services/skill_manager.py
+2. data/skills/hs_code_advisor/SKILL.md
+3. data/skills/tax_calculator/SKILL.md
+
+修改文件：
+1. src/services/chat_agent.py（4处修改）
+
+测试文件：
+1. 测试文件_无用文件/test_skill_system.py（已移动到无用文件目录）
+
+
+八、端口清理
+------------
+
+✅ 测试前清理端口 8000（PID 64324）
+✅ 测试完成后端口已完全释放
+
+
+九、总结
+--------
+
+技能插件系统已成功实现，所有测试场景通过。
+
+系统架构具备良好扩展性，后续添加新技能只需：
+1. 在data/skills/创建新目录
+2. 编写SKILL.md文件（YAML frontmatter + Markdown正文）
+3. 重启服务即可自动生效
+
+无需修改任何核心代码，极大提升了系统的可维护性和扩展性。
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+测试状态：✅ 所有测试通过

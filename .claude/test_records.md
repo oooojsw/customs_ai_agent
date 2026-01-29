@@ -835,3 +835,624 @@ document.querySelectorAll('[id^="tool-result-"]')
 4. 准确理解用户问题是解决问题的关键
 
 修复时间：2026-01-29
+
+========================================
+测试记录（补充）- 2026-01-29 端口清理
+========================================
+
+【端口清理记录】
+
+本次会话结束后自动清理端口：
+✅ 测试后清理端口 8000（PID 56592）
+
+清理时间：2026-01-29
+清理命令：taskkill //F //PID 56592
+验证结果：端口已完全释放（netstat 无返回）
+
+
+========================================
+测试记录（补充）- 2026-01-29 汇率查询工具新增
+========================================
+
+【测试项目】功能二汇率查询工具开发
+
+需求概述：
+根据"接口规范/中行汇率查询api规范.md"文档，为功能二（智能体）添加一个新的汇率查询工具。
+
+技术实现：
+
+1. API集成
+   - 接口：每刻报销汇率API (https://openapi-ng.maycur.com/api/openapi/currency/sys-exchange-rate)
+   - 数据来源：中国银行实时汇率
+   - 请求方式：POST + JSON
+   - 认证：无需API密钥
+
+2. 工具注册（src/services/chat_agent.py）
+   - 第7-9行：添加导入（requests, time, re）
+   - 第90-109行：添加 CURRENCY_MAP 货币映射表
+   - 第112-150行：添加 _fetch_exchange_rate() API调用函数
+   - 第152-177行：添加 _format_exchange_rate_result() 格式化函数
+   - 第231-272行：添加 query_exchange_rate_tool() 工具函数
+   - 第274-278行：注册工具到 self.tools
+   - 第281-289行：更新系统提示词
+
+3. 前端国际化（web/js/i18n.js）
+   - 第41行：添加中文 tool_query_exchange_rate
+   - 第179行：添加越南语 tool_query_exchange_rate
+
+核心功能：
+- ✅ 支持自然语言输入（中英文货币名称）
+- ✅ 自动识别货币对（美元/USD、欧元/EUR等）
+- ✅ 提取换算金额（100美元、50欧元等）
+- ✅ 智能默认目标货币（单一货币默认兑CNY）
+- ✅ 实时查询中国银行汇率
+- ✅ 自动计算货币换算
+- ✅ 友好的格式化输出
+
+测试验证：
+
+服务器启动验证：
+✅ 服务器启动成功
+✅ 工具列表显示：['audit_declaration', 'search_customs_regulations', 'query_exchange_rate']
+✅ 新工具已成功注册
+
+测试场景（计划中，待用户验证）：
+1. 基础汇率查询："USD到CNY的汇率是多少？"
+2. 带金额换算："100美元能换多少人民币？"
+3. 中文货币名称："欧元兑人民币的汇率"
+4. 单一货币查询："美元汇率"
+5. ISO货币代码："JPY到CNY"
+
+技术亮点：
+1. NLP货币识别 - 支持中英文货币名称和ISO代码
+2. 智能默认货币 - 单一货币默认兑CNY
+3. 完善的错误处理 - 网络超时、API错误、货币识别失败
+4. 友好的输出格式 - 表情符号、分层显示、数据来源标识
+
+修改文件：
+1. src/services/chat_agent.py（7处修改）
+2. web/js/i18n.js（2处修改）
+
+预期效果：
+✅ 用户可以通过自然语言查询汇率
+✅ 支持中英文货币名称输入
+✅ 自动进行金额换算
+✅ 数据来源：中国银行
+✅ 错误处理完善，提示信息友好
+✅ 与现有工具无缝集成
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：✅ 开发完成，服务器已启动，待用户测试验证
+
+
+========================================
+测试记录（补充）- 2026-01-29 技能插件系统实现
+========================================
+
+【测试项目】技能插件系统（Skill Plugin System）
+
+需求概述：
+在现有的海关AI代理系统中新增动态技能（Skill）系统，允许通过添加Markdown配置文件动态扩展Agent能力，无需修改核心代码。
+
+核心目标：
+- 插件化架构：通过data/skills/目录下的SKILL.md文件定义新技能
+- 动态加载：启动时自动扫描并注册技能
+- 工具调用：通过use_skill工具动态激活技能
+- 提示词注入：自动将技能清单注入System Prompt
+
+技术实现：
+
+1. 新增文件
+   - src/services/skill_manager.py - 技能管理器核心类
+   - data/skills/hs_code_advisor/SKILL.md - HS编码归类顾问技能
+   - data/skills/tax_calculator/SKILL.md - 进口税费计算器技能
+
+2. 修改文件
+   - src/services/chat_agent.py - 集成技能系统（4处修改）
+     * 第41-47行：添加SkillManager导入模块
+     * 第263-270行：初始化技能管理器
+     * 第323-371行：注册use_skill工具
+     * 第373-394行：更新System Prompt
+
+3. 技能文件格式（SKILL.md）
+   ```markdown
+   ---
+   name: skill_name
+   description: 技能描述
+   ---
+
+   # 技能标题
+
+   ## 工作流程
+   ...
+
+   ## 输出格式
+   ...
+   ```
+
+核心功能：
+- ✅ 自动扫描data/skills/目录
+- ✅ 解析YAML frontmatter获取技能元数据
+- ✅ 生成技能清单并注入System Prompt
+- ✅ 通过use_skill工具动态加载技能内容
+- ✅ 完善的错误处理（技能不存在、格式错误等）
+
+测试结果：
+
+测试1：技能管理器基础功能
+✅ 成功加载2个技能（hs_code_advisor, tax_calculator）
+✅ 技能清单正确生成
+✅ 技能内容正确加载
+✅ 错误处理正常
+
+测试2：ChatAgent集成
+✅ skill_manager初始化成功
+✅ use_skill工具已注册
+✅ System Prompt包含技能提示
+✅ 工具调用成功
+
+测试3：技能内容验证
+✅ hs_code_advisor包含完整工作流程（提取要素 → 归类原则 → 编码建议）
+✅ tax_calculator包含计算公式（关税、增值税、消费税）
+
+启动验证：
+服务器日志显示：
+[ChatAgent] 成功加载技能管理器模块
+[SkillManager] [OK] 已加载技能: hs_code_advisor - 帮助用户查询商品的HS编码。当用户询问商品归类、税号或编码时使用。
+[SkillManager] [OK] 已加载技能: tax_calculator - 估算进口商品的关税和增值税。当用户询问"这货要交多少税"时使用。
+[ChatAgent] 智能体就绪，工具列表: ['audit_declaration', 'search_customs_regulations', 'use_skill']
+
+预期效果：
+✅ 添加新技能只需在data/skills/创建新目录和SKILL.md
+✅ 重启服务自动生效，无需修改代码
+✅ 技能描述自动注入System Prompt
+✅ LLM可根据用户意图自动调用use_skill工具
+✅ 支持无限扩展技能数量
+
+修改文件清单：
+1. src/services/skill_manager.py（新增）
+2. data/skills/hs_code_advisor/SKILL.md（新增）
+3. data/skills/tax_calculator/SKILL.md（新增）
+4. src/services/chat_agent.py（修改）
+
+测试脚本：
+测试文件_无用文件/test_skill_system.py
+
+测试结论：
+技能插件系统已成功实现 ✅
+所有测试场景通过 ✅
+系统架构具备良好扩展性 ✅
+
+技术亮点：
+1. 插件化设计 - 通过配置文件动态扩展能力
+2. YAML frontmatter - 标准化的技能元数据格式
+3. 自动发现机制 - 启动时自动扫描并注册技能
+4. 热插拔支持 - 添加/删除技能无需修改代码
+5. 提示词注入 - 自动将技能清单融入System Prompt
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：✅ 开发完成，所有测试通过
+
+端口清理：
+✅ 测试前清理端口 8000（PID 64324）
+
+========================================
+测试记录（补充）- 2026-01-29 技能系统三级加载架构
+========================================
+
+
+========================================
+测试记录（补充）- 2026-01-29 技能系统三级加载架构
+========================================
+
+【测试项目】技能插件系统三级加载架构（Progressive Loading）
+
+需求概述：
+将现有的技能插件系统改造为三级加载架构，解决"上下文爆炸"问题：
+- L1（索引层）：启动时只读取技能的 name 和 description
+- L2（指令层）：调用 use_skill 时才读取 SKILL.md 正文
+- L3（资源层）：需要时才读取 resources/ 目录下的辅助文件
+
+核心目标：
+1. 节省 Token：L1 层不超过 500 tokens
+2. 按需加载：L2/L3 只在特定工具调用时触发
+3. 资源隔离：Agent 在调用 use_skill 前不知道 resources/ 下的具体文件
+4. 向后兼容：旧技能（无 resources）继续正常工作
+
+技术实现：
+
+1. SkillManager 改造（src/services/skill_manager.py）
+   新增方法：
+   - _parse_skill_frontmatter_only() - 只解析 YAML 头（第59-87行）
+   - list_resources() - 列出技能资源文件（第148-184行）
+   - get_resource_content() - 读取资源文件内容（第186-237行）
+
+   修改方法：
+   - _discover_skills() - L1 加载，只读取 frontmatter（第24-57行）
+   - load_skill_content() - L2 加载，增加资源提示（第123-146行）
+
+2. ChatAgent 工具链更新（src/services/chat_agent.py）
+   修改方法：
+   - use_skill_tool() - L2 加载日志（第324-353行）
+   - 新增 read_skill_resource_tool() - L3 资源读取（第355-383行）
+   - 新增 list_skill_resources_tool() - 资源列表查询（第385-409行）
+   - System Prompt - 三级加载说明（第443-461行）
+
+3. 测试数据创建
+   - data/skills/tax_calculator/SKILL.md - 添加 resources 字段
+   - data/skills/tax_calculator/resources/tax_rates.csv - 税率数据
+   - data/skills/tax_calculator/resources/ftas.json - 自贸协定数据
+
+测试结果：
+
+测试1：L1 层加载（索引层）
+✅ 启动时只读取 YAML frontmatter
+✅ 技能清单文本：~25 tokens（远低于500 tokens限制）
+✅ 包含 name 和 description
+✅ 记录 resources_dir 和 resource_files
+
+测试2：L2 层加载（指令层）
+✅ use_skill 触发时读取正文
+✅ 内容长度：~179 tokens（低于2000 tokens限制）
+✅ 自动添加资源提示："【可用资源文件】"
+✅ 提示用户调用 read_skill_resource 工具
+
+测试3：L3 层加载（资源层）
+✅ read_skill_resource 按需读取文件
+✅ CSV 文件读取：~72 tokens
+✅ JSON 文件格式化输出
+✅ 支持文件大小限制（max_lines=100）
+
+测试4：安全防护
+✅ 路径遍历攻击防护（../../../etc/passwd）
+✅ 绝对路径攻击防护（C:/Windows/System32）
+✅ 文件路径范围校验（is_relative_to）
+✅ 不存在文件的错误处理
+
+测试5：向后兼容性
+✅ 旧技能（hs_code_advisor，无 resources）正常工作
+✅ resource_files 为空列表时不报错
+✅ list_resources 返回"该技能无资源文件夹"
+
+测试6：集成测试（实际对话场景）
+场景1：用户询问"这批货要交多少税？"
+✅ 调用 use_skill("tax_calculator")
+✅ 日志显示：🔧 [Tool Call] L2加载: tax_calculator
+✅ 返回技能手册 + 资源列表提示
+✅ Agent 自动调用 list_skill_resources
+✅ Agent 自动调用 read_skill_resource("tax_calculator|tax_rates.csv")
+✅ 日志显示：📄 [Tool Call] L3加载资源: tax_calculator/tax_rates.csv
+
+场景2：追问"电动机 HS8501.51.0000 的税率是多少？"
+✅ Agent 直接使用已加载的税率数据
+✅ 正确回答：最惠国关税率10%，增值税率13%
+✅ 提供税费计算示例
+✅ 推荐自贸协定优惠
+
+Token 使用效率分析：
+
+【旧架构】启动时加载所有技能正文 + 资源
+- 启动 Token: ~25 + 179 + 72 = 276 tokens（每个技能）
+- 10 个技能: ~2760 tokens（启动开销）
+
+【新架构】三级按需加载
+- 启动 Token: ~25 tokens（仅技能描述）
+- 按需加载: 只在用户询问时才加载 L2+L3
+- 10 个技能: ~250 tokens（启动开销，节省 90%）
+
+【对话场景】用户询问税费
+- L1: 已加载（25 tokens） ← 启动时
+- L2: use_skill 触发（179 tokens） ← 调用时
+- L3: read_skill_resource 触发（72 tokens） ← 需要数据时
+
+总节省: 启动时不加载 251 tokens × 技能数量
+
+修改文件清单：
+1. src/services/skill_manager.py（新增3个方法，修改2个方法）
+2. src/services/chat_agent.py（新增2个工具，修改1个工具，更新 Prompt）
+3. data/skills/tax_calculator/SKILL.md（添加 resources 字段）
+4. data/skills/tax_calculator/resources/tax_rates.csv（新增）
+5. data/skills/tax_calculator/resources/ftas.json（新增）
+
+测试脚本：
+测试文件_无用文件/test_progressive_loading.py（单元测试）
+测试文件_无用文件/test_integration.py（集成测试）
+
+预期效果：
+✅ 启动时 Token 占用 < 500
+✅ 按需加载 L2/L3 内容
+✅ 支持大型数据文件（CSV/JSON）作为技能资源
+✅ 路径安全防护
+✅ 向后兼容旧技能
+
+测试结论：
+三级加载架构已成功实现 ✅
+所有单元测试通过 ✅
+所有集成测试通过 ✅
+Token 使用效率优化 90% ✅
+安全防护机制完善 ✅
+向后兼容性保证 ✅
+
+技术亮点：
+1. 三级渐进式加载 - L1/L2/L3 按需触发
+2. Token 效率优化 - 启动节省 90% tokens
+3. 资源文件隔离 - Agent 在 L2 前不知道 L3 内容
+4. 安全路径校验 - 防止路径遍历攻击
+5. 向后兼容设计 - 旧技能无需修改
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：✅ 开发完成，所有测试通过
+
+端口清理：
+✅ 无需端口清理（测试脚本未启动服务器）
+
+
+
+========================================
+测试记录（补充）- 2026-01-29 技能系统三级加载架构
+========================================
+
+【测试项目】技能插件系统三级加载架构（Progressive Loading）
+
+需求概述：
+将现有的技能插件系统改造为三级加载架构，解决"上下文爆炸"问题：
+- L1（索引层）：启动时只读取技能的 name 和 description
+- L2（指令层）：调用 use_skill 时才读取 SKILL.md 正文
+- L3（资源层）：需要时才读取 resources/ 目录下的辅助文件
+
+核心目标：
+1. 节省 Token：L1 层不超过 500 tokens
+2. 按需加载：L2/L3 只在特定工具调用时触发
+3. 资源隔离：Agent 在调用 use_skill 前不知道 resources/ 下的具体文件
+4. 向后兼容：旧技能（无 resources）继续正常工作
+
+技术实现：
+
+1. SkillManager 改造（src/services/skill_manager.py）
+   新增方法：
+   - _parse_skill_frontmatter_only() - 只解析 YAML 头（第59-87行）
+   - list_resources() - 列出技能资源文件（第148-184行）
+   - get_resource_content() - 读取资源文件内容（第186-237行）
+
+   修改方法：
+   - _discover_skills() - L1 加载，只读取 frontmatter（第24-57行）
+   - load_skill_content() - L2 加载，增加资源提示（第123-146行）
+
+2. ChatAgent 工具链更新（src/services/chat_agent.py）
+   修改方法：
+   - use_skill_tool() - L2 加载日志（第324-353行）
+   - 新增 read_skill_resource_tool() - L3 资源读取（第355-383行）
+   - 新增 list_skill_resources_tool() - 资源列表查询（第385-409行）
+   - System Prompt - 三级加载说明（第443-461行）
+
+3. 测试数据创建
+   - data/skills/tax_calculator/SKILL.md - 添加 resources 字段
+   - data/skills/tax_calculator/resources/tax_rates.csv - 税率数据
+   - data/skills/tax_calculator/resources/ftas.json - 自贸协定数据
+
+测试结果：
+
+测试1：L1 层加载（索引层）
+✅ 启动时只读取 YAML frontmatter
+✅ 技能清单文本：~25 tokens（远低于500 tokens限制）
+✅ 包含 name 和 description
+✅ 记录 resources_dir 和 resource_files
+
+测试2：L2 层加载（指令层）
+✅ use_skill 触发时读取正文
+✅ 内容长度：~179 tokens（低于2000 tokens限制）
+✅ 自动添加资源提示："【可用资源文件】"
+✅ 提示用户调用 read_skill_resource 工具
+
+测试3：L3 层加载（资源层）
+✅ read_skill_resource 按需读取文件
+✅ CSV 文件读取：~72 tokens
+✅ JSON 文件格式化输出
+✅ 支持文件大小限制（max_lines=100）
+
+测试4：安全防护
+✅ 路径遍历攻击防护（../../../etc/passwd）
+✅ 绝对路径攻击防护（C:/Windows/System32）
+✅ 文件路径范围校验（is_relative_to）
+✅ 不存在文件的错误处理
+
+测试5：向后兼容性
+✅ 旧技能（hs_code_advisor，无 resources）正常工作
+✅ resource_files 为空列表时不报错
+✅ list_resources 返回"该技能无资源文件夹"
+
+测试6：集成测试（实际对话场景）
+场景1：用户询问"这批货要交多少税？"
+✅ 调用 use_skill("tax_calculator")
+✅ 日志显示：🔧 [Tool Call] L2加载: tax_calculator
+✅ 返回技能手册 + 资源列表提示
+✅ Agent 自动调用 list_skill_resources
+✅ Agent 自动调用 read_skill_resource("tax_calculator|tax_rates.csv")
+✅ 日志显示：📄 [Tool Call] L3加载资源: tax_calculator/tax_rates.csv
+
+场景2：追问"电动机 HS8501.51.0000 的税率是多少？"
+✅ Agent 直接使用已加载的税率数据
+✅ 正确回答：最惠国关税率10%，增值税率13%
+✅ 提供税费计算示例
+✅ 推荐自贸协定优惠
+
+Token 使用效率分析：
+
+【旧架构】启动时加载所有技能正文 + 资源
+- 启动 Token: ~25 + 179 + 72 = 276 tokens（每个技能）
+- 10 个技能: ~2760 tokens（启动开销）
+
+【新架构】三级按需加载
+- 启动 Token: ~25 tokens（仅技能描述）
+- 按需加载: 只在用户询问时才加载 L2+L3
+- 10 个技能: ~250 tokens（启动开销，节省 90%）
+
+【对话场景】用户询问税费
+- L1: 已加载（25 tokens） ← 启动时
+- L2: use_skill 触发（179 tokens） ← 调用时
+- L3: read_skill_resource 触发（72 tokens） ← 需要数据时
+
+总节省: 启动时不加载 251 tokens × 技能数量
+
+修改文件清单：
+1. src/services/skill_manager.py（新增3个方法，修改2个方法）
+2. src/services/chat_agent.py（新增2个工具，修改1个工具，更新 Prompt）
+3. data/skills/tax_calculator/SKILL.md（添加 resources 字段）
+4. data/skills/tax_calculator/resources/tax_rates.csv（新增）
+5. data/skills/tax_calculator/resources/ftas.json（新增）
+
+测试脚本：
+测试文件_无用文件/test_progressive_loading.py（单元测试）
+测试文件_无用文件/test_integration.py（集成测试）
+
+预期效果：
+✅ 启动时 Token 占用 < 500
+✅ 按需加载 L2/L3 内容
+✅ 支持大型数据文件（CSV/JSON）作为技能资源
+✅ 路径安全防护
+✅ 向后兼容旧技能
+
+测试结论：
+三级加载架构已成功实现 ✅
+所有单元测试通过 ✅
+所有集成测试通过 ✅
+Token 使用效率优化 90% ✅
+安全防护机制完善 ✅
+向后兼容性保证 ✅
+
+技术亮点：
+1. 三级渐进式加载 - L1/L2/L3 按需触发
+2. Token 效率优化 - 启动节省 90% tokens
+3. 资源文件隔离 - Agent 在 L2 前不知道 L3 内容
+4. 安全路径校验 - 防止路径遍历攻击
+5. 向后兼容设计 - 旧技能无需修改
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：✅ 开发完成，所有测试通过
+
+端口清理：
+✅ 无需端口清理（测试脚本未启动服务器）
+
+
+========================================
+测试记录（补充）- 2026-01-29 L4层脚本执行引擎
+========================================
+
+【测试项目】Python 脚本执行引擎（L4 层）
+
+需求概述：
+在现有的三级加载架构（L1索引层、L2指令层、L3资源层）基础上，增加 L4层（动态脚本执行层），赋予 Agent 代码执行能力。
+
+核心目标：
+- Agent 可以调用存储在技能包中的 .py 脚本
+- 将参数传入脚本，并获取脚本的运行结果（stdout）作为推理依据
+- 采用独立子进程 + 标准输入输出模式，安全且易于调试
+
+技术实现：
+
+1. 新增文件
+   - src/services/script_executor.py - ScriptExecutor 类（核心执行引擎）
+   - data/skills/tax_calculator/scripts/calculate_duty.py - 测试脚本
+   - tests/test_skill_execution.py - 测试套件
+
+2. 修改文件
+   - src/services/skill_manager.py
+     * 第53行：添加 'scripts_dir': skill_path / 'scripts' 字段
+     * 第240-265行：新增 get_script_path() 方法（含安全校验）
+
+   - src/services/chat_agent.py
+     * 第49-55行：导入 ScriptExecutor 模块
+     * 第280-285行：初始化 script_executor 实例
+     * 第471-536行：新增 run_skill_script 工具
+     * 第540-557行：更新 System Prompt（四级加载架构说明）
+
+3. 技能手册更新
+   - data/skills/tax_calculator/SKILL.md
+     * 第69-84行：添加 L4 脚本调用说明和示例
+
+核心功能：
+- 独立子进程执行（subprocess.run）
+- 超时控制（默认 10 秒）
+- JSON 参数传递（sys.argv[1]）
+- JSON 结果解析（stdout）
+- 错误隔离（异常不影响主进程）
+- 路径遍历防护
+
+测试结果：
+
+测试1：基础计算验证
+脚本路径正确获取：data\skills\tax_calculator\scripts\calculate_duty.py
+执行结果：{'success': True, 'result': {'duty': 0.0, 'vat': 1300.0, 'total': 1300.0, ...}}
+芯片关税为 0（HS 85423100）
+增值税为 1300（10000 * 13%）
+
+测试2：普通商品关税计算
+普通商品关税为 500（10000 * 5%）
+增值税为 1365（(10000 + 500) * 13%）
+总税额为 1865
+
+测试3：错误处理验证
+除零错误被正确捕获
+返回 success: False
+错误信息包含 ZeroDivisionError
+主进程未崩溃
+
+测试4：参数传递验证
+浮点数参数正确传递（5000.5）
+增值税计算结果：650.07
+精度误差在允许范围内（< 0.01）
+
+测试5：安全验证
+路径遍历攻击被拦截：../../../etc/passwd
+ValueError 异常抛出
+错误信息："禁止路径遍历"
+
+测试6：JSON 格式验证
+返回结果为 dict 类型
+包含所有必需字段：duty, vat, total, duty_rate, vat_rate, hs_code
+数据类型正确（float 和 str）
+
+测试统计：
+- 通过：6 个
+- 失败：0 个
+- 通过率：100%（核心功能）
+
+安全特性：
+1. 路径遍历防护（get_script_path 校验）
+2. 超时控制（subprocess.TimeoutExpired）
+3. 异常隔离（try-except 捕获）
+4. 路径范围校验（is_relative_to）
+5. 依赖限制（仅标准库）
+
+修改文件清单：
+1. src/services/script_executor.py（新增）
+2. src/services/skill_manager.py（修改）
+3. src/services/chat_agent.py（修改）
+4. data/skills/tax_calculator/scripts/calculate_duty.py（新增）
+5. data/skills/tax_calculator/SKILL.md（修改）
+6. tests/test_skill_execution.py（新增）
+
+测试结论：
+L4 层脚本执行引擎已成功实现
+所有核心测试通过
+安全防护机制完善
+向后兼容性保证
+
+技术亮点：
+1. 独立子进程设计 - 隔离性好，安全性高
+2. 超时控制机制 - 防止死循环
+3. 标准化接口 - JSON 参数传递和返回
+4. 路径安全校验 - 防止路径遍历攻击
+5. 错误隔离设计 - 脚本异常不影响主进程
+
+开发时间：2026-01-29
+开发人员：Claude Code Sonnet 4.5
+状态：开发完成，所有核心测试通过
+
+端口清理：
+无需端口清理（测试脚本未启动服务器）
+
