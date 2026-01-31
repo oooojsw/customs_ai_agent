@@ -157,9 +157,114 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
     }
 }
 
+/* 工具覆盖层动画 */
+@keyframes fade-in-out {
+    0% {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    20% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    80% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    100% {
+        opacity: 0.8;
+        transform: translateY(0);
+    }
+}
+
+/* 迷你进度条动画 */
+@keyframes progress-slide {
+    0% {
+        left: -50%;
+    }
+    100% {
+        left: 100%;
+    }
+}
+
+/* 工具覆盖层 */
+.tool-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.15) 0%, rgba(59, 130, 246, 0.15) 100%);
+    border: 1px solid rgba(6, 182, 212, 0.3);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-size: 0.9rem;
+    color: #67e8f9;
+    font-weight: 500;
+    backdrop-filter: blur(8px);
+    z-index: 10;
+    overflow: hidden;
+}
+
+.tool-overlay.fade {
+    animation: fade-in-out 2s ease-in-out infinite;
+}
+
+.tool-overlay .progress-bar-mini {
+    position: absolute;
+    bottom: 0;
+    left: -50%;
+    width: 50%;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.8), transparent);
+    animation: progress-slide 1.5s ease-in-out infinite;
+}
+
 /* AI 内容容器 */
 .ai-content {
     margin-bottom: 8px;
+    position: relative;
+}
+
+/* 下载按钮容器 */
+.download-button-container {
+    margin-top: 12px;
+    animation: slide-in-up 0.3s ease-out;
+}
+
+.download-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    text-decoration: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
+.download-button:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+    transform: translateY(-1px);
+}
+
+.download-button:active {
+    transform: translateY(0);
+}
+
+.download-button i {
+    font-size: 1.1rem;
+}
+
+.download-button .filename {
+    color: #d1fae5;
+    font-size: 0.85rem;
+    margin-left: 4px;
 }
 
 /* Markdown 内容样式修正 */

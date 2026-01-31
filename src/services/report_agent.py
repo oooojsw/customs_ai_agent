@@ -159,6 +159,9 @@ class ComplianceReporter:
         self.sop_customs = self._load_specific_sop("sop_process.txt", "标准海关合规审查SOP")
         self.sop_research = self._load_specific_sop("sop_deep_research.txt", "通用深度研判SOP")
 
+        # 5. 报告文本缓冲区（用于工具调用时存储完整报告）
+        self.report_text_buffer = ""
+
     def _load_research_config(self) -> dict:
         """加载智能检索配置"""
         try:
@@ -717,14 +720,22 @@ class ComplianceReporter:
 
             return should_continue, reason + " (规则降级)", "rule"
 
-    async def generate_stream(self, input_text: str, language: str = "zh") -> AsyncGenerator[str, None]:
+    async def generate_stream(self, input_text: str, language: str = "zh", stream_chunks: bool = True) -> AsyncGenerator[str, None]:
         """
         核心生成流
+
+        Args:
+            input_text: 输入文本
+            language: 语言 (zh/vi)
+            stream_chunks: 是否发送 report_chunk 事件（工具调用时应设为 False）
         """
         # 0. 立即握手
         engine_start = self._get_ui_text("engine_start", language)
         yield self._sse("thought", f"🚀 {engine_start}")
         await asyncio.sleep(0.1)
+
+        # 🔥 清空报告缓冲区（为新的生成做准备）
+        self.report_text_buffer = ""
 
         # 1. 路由判断
         mode = self._detect_mode(input_text)
@@ -959,8 +970,14 @@ class ComplianceReporter:
 """
                 async for chunk in self.llm.astream([HumanMessage(content=write_prompt)]):
                     if chunk.content:
-                        yield self._sse("report_chunk", chunk.content)
+                        # 🔥 同时累积到 state 和实例缓冲区
                         state["full_report_text"] += chunk.content
+                        self.report_text_buffer += chunk.content  # 实例缓冲区（工具可读取）
+
+                        # 🔥 只有在 stream_chunks=True 时才发送 report_chunk 事件
+                        # 工具调用时应设为 False，避免内容泄露到聊天界面
+                        if stream_chunks:
+                            yield self._sse("report_chunk", chunk.content)
                 
                 state["full_report_text"] += "\n\n"
                 yield self._sse("step_done", {"index": i})

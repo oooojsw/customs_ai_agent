@@ -1,3 +1,8 @@
+# ==================== 最高优先级忽略规则 ====================
+# AI 工具文件夹（必须在最前面，确保永不被跟踪）
+.claude/           # Claude Code 工作目录
+.roo/              # Roo Code 工具配置
+
 # 忽略环境配置文件（包含敏感 API Key，绝对不能上传！）
 # 包含：DeepSeek、OpenAI、Google Gemini 等厂商的 API Key
 .env
@@ -140,8 +145,6 @@ test_batch.csv
 test_batch.xlsx
 
 # 忽略 AI 工具配置和缓存
-.claude/           # Claude Code 工作目录，包含 test_records.md（可能包含敏感测试数据）
-.roo/              # Roo Code 工具配置
 npm-cache/         # npm 缓存
 **/npm-cache/      # 任何位置的 npm 缓存
 Users*npm-cache/   # Windows 用户 npm 缓存
@@ -179,3 +182,5 @@ nul
 *.mov
 *.mkv
 接口规范/硅基流动api接口规范.md
+=0.8.11
+.claudetest_records.md

@@ -43,6 +43,6 @@ async def init_database():
     (仅在首次启动时调用，生产环境建议使用Alembic迁移)
     """
     async with engine.begin() as conn:
-        # 强制创建所有表，包括新增的 UserLLMConfig 表
-        await conn.run_sync(Base.metadata.create_all, checkfirst=False)
+        # 检查表是否存在，避免重复创建导致异常
+        await conn.run_sync(Base.metadata.create_all, checkfirst=True)
     print("[Database] All tables initialized")

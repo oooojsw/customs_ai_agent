@@ -41,6 +41,7 @@ const translations = {
         tool_query_exchange_rate: '汇率查询',
         tool_calling: '正在调用工具',
         tool_call_done: '调用完毕',
+        download_word: '下载 Word 文档',
 
         // 报告模块
         compliance_audit: '智能合规审计',
@@ -179,6 +180,7 @@ const translations = {
         tool_query_exchange_rate: 'Tra cứu tỷ giá',
         tool_calling: 'Đang gọi công cụ',
         tool_call_done: 'Hoàn thành',
+        download_word: 'Tải xuống tài liệu Word',
 
         // 报告模块
         compliance_audit: 'Kiểm toán Tuân thủ Thông minh',

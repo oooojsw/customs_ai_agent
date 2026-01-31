@@ -90,20 +90,35 @@ async function sendMessage() {
                     answerDiv.classList.remove('hidden');
 
                     if (data.type === 'answer') {
-                        currentContentBuffer += data.content;
-                        // 更新或创建内容div
-                        if (lastContentDiv) {
-                            lastContentDiv.innerHTML = marked.parse(currentContentBuffer);
-                        } else {
-                            const contentDiv = document.createElement('div');
-                            contentDiv.className = 'ai-content';
-                            contentDiv.innerHTML = marked.parse(currentContentBuffer);
-                            document.getElementById(answerId).appendChild(contentDiv);
-                            lastContentDiv = contentDiv;
-                        }
-                        // 只有当用户不在滚动时才自动滚动
-                        if (!isUserScrolling) {
-                            scrollToBottom(history);
+                        // 🔥 过滤工具相关的废话
+                        const content = data.content;
+
+                        // 检查是否是工具调用前后的废话
+                        const wastePatterns = [
+                            /^(好的|我来|现在|让我|正在|开始|马上)/,  // 工具调用前
+                            /^(工具|已|完成|完毕|返回)/,               // 工具调用后
+                            /报告.*生成|文档.*导出|深度.*研究/         // 工具相关关键词
+                        ];
+
+                        const isWaste = wastePatterns.some(pattern => pattern.test(content.trim()));
+
+                        // 如果是废话，不显示；否则正常显示
+                        if (!isWaste) {
+                            currentContentBuffer += content;
+                            // 更新或创建内容div
+                            if (lastContentDiv) {
+                                lastContentDiv.innerHTML = marked.parse(currentContentBuffer);
+                            } else {
+                                const contentDiv = document.createElement('div');
+                                contentDiv.className = 'ai-content';
+                                contentDiv.innerHTML = marked.parse(currentContentBuffer);
+                                document.getElementById(answerId).appendChild(contentDiv);
+                                lastContentDiv = contentDiv;
+                            }
+                            // 只有当用户不在滚动时才自动滚动
+                            if (!isUserScrolling) {
+                                scrollToBottom(history);
+                            }
                         }
                     } else if (data.type === 'thinking') {
                         // AI思考过程（DeepSeek R1推理流）
@@ -114,6 +129,35 @@ async function sendMessage() {
                         toolResults.set(currentToolIdx, ''); // 初始化结果为空
 
                         const toolDisplayName = getToolDisplayName(data.tool_name);
+
+                        // 检查是否有 display_config
+                        const hasDisplayConfig = data.display_config && data.display_config.title;
+
+                        // 如果有 display_config，先创建 ToolOverlay
+                        if (hasDisplayConfig) {
+                            const overlayId = `tool-overlay-${currentToolIdx}`;
+                            const showProgress = data.display_config.show_progress;
+                            const animationClass = data.display_config.animation || 'fade';
+                            const progressBarHtml = showProgress ? '<div class="progress-bar-mini"></div>' : '';
+
+                            const overlayHtml = `
+                                <div class="tool-overlay ${animationClass}" id="${overlayId}">
+                                    <i class="fa-solid fa-spinner fa-spin"></i>
+                                    <span style="margin-left: 8px;">${data.display_config.title}</span>
+                                    ${progressBarHtml}
+                                </div>
+                            `;
+
+                            // 将 overlay 插入到最后一个内容div之后
+                            const answerElement = document.getElementById(answerId);
+                            if (lastContentDiv) {
+                                lastContentDiv.insertAdjacentHTML('afterend', overlayHtml);
+                            } else {
+                                answerElement.insertAdjacentHTML('beforeend', overlayHtml);
+                            }
+                        }
+
+                        // 然后创建常规工具状态卡片
                         const toolHtml = `
                             <div class="chat-tool-status calling" data-tool-name="${data.tool_name}" data-tool-idx="${currentToolIdx}">
                                 <div class="chat-tool-status-left">
@@ -157,6 +201,20 @@ async function sendMessage() {
                         if (targetTool) {
                             const toolIdx = targetTool.getAttribute('data-tool-idx');
 
+                            // 移除 ToolOverlay（如果存在）
+                            const overlay = document.getElementById(`tool-overlay-${toolIdx}`);
+                            if (overlay) {
+                                // 添加淡出动画
+                                overlay.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
+                                overlay.style.opacity = '0';
+                                overlay.style.transform = 'translateY(-10px)';
+
+                                // 动画完成后移除元素
+                                setTimeout(() => {
+                                    overlay.remove();
+                                }, 300);
+                            }
+
                             // 移除空值检查，始终保存结果（修复bug：空结果也能展开）
                             const toolResult = data.tool_result || '';
                             toolResults.set(parseInt(toolIdx), toolResult);
@@ -180,6 +238,30 @@ async function sendMessage() {
                                     <i class="fa-solid fa-chevron-down"></i>
                                 </button>
                             `;
+
+                            // ✨ 特殊处理：export_document_file 工具完成后添加下载按钮
+                            if (data.tool_name === 'export_document_file' && toolResult) {
+                                // 从工具结果中提取文件名
+                                const filenameMatch = toolResult.match(/\/downloads\/([a-zA-Z0-9_\-\.]+\.docx)/);
+                                if (filenameMatch) {
+                                    const filename = filenameMatch[1];
+                                    const downloadUrl = `/downloads/${filename}`;
+
+                                    // 创建下载按钮
+                                    const downloadBtn = document.createElement('div');
+                                    downloadBtn.className = 'download-button-container';
+                                    downloadBtn.innerHTML = `
+                                        <a href="${downloadUrl}" download="${filename}" class="download-button">
+                                            <i class="fa-solid fa-file-word"></i>
+                                            <span>${t('download_word')}</span>
+                                            <span class="filename">${filename}</span>
+                                        </a>
+                                    `;
+
+                                    // 插入到 AI 消息的最后
+                                    answerElement.appendChild(downloadBtn);
+                                }
+                            }
 
                             if (!isUserScrolling) {
                                 scrollToBottom(history);

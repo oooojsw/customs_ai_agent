@@ -8,6 +8,7 @@
 
 import sys
 import json
+from pathlib import Path
 
 def main():
     # 1. 检查参数
@@ -15,12 +16,25 @@ def main():
         print(json.dumps({"error": "缺少参数"}, ensure_ascii=False))
         sys.exit(1)
 
-    # 2. 解析 JSON 参数
+    # 2. 解析参数（支持文件传参和直接传参两种方式）
+    args = None
+
+    # 方式1：从文件读取参数（ScriptExecutor 使用的方式）
     try:
-        args = json.loads(sys.argv[1])
-    except json.JSONDecodeError:
-        print(json.dumps({"error": "参数 JSON 格式无效"}, ensure_ascii=False))
-        sys.exit(1)
+        param_path = sys.argv[1]
+        if param_path.endswith('.json') and Path(param_path).exists():
+            with open(param_path, 'r', encoding='utf-8') as f:
+                args = json.load(f)
+    except:
+        pass
+
+    # 方式2：直接解析 JSON 字符串（向后兼容）
+    if args is None:
+        try:
+            args = json.loads(sys.argv[1])
+        except json.JSONDecodeError:
+            print(json.dumps({"error": "参数格式无效，应为 JSON 文件路径或 JSON 字符串"}, ensure_ascii=False))
+            sys.exit(1)
 
     # 3. 提取参数
     cif_price = args.get('cif_price', 0)

@@ -120,6 +120,12 @@ async def lifespan(app: FastAPI):
     app.state.llm_config = llm_config
     print(f"✅ [System] LLM配置已保存到 app.state (来源: {llm_config['source']})")
 
+    # 确保导出目录存在（功能三：深度研究工具）
+    export_dir = project_root / "data" / "exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    app.state.export_dir = export_dir
+    print(f"✅ [System] 导出目录已就绪：{export_dir}")
+
     # 自动打开浏览器
     async def open_browser():
         await asyncio.sleep(2.5)
@@ -151,6 +157,14 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+# 挂载下载目录（功能三：深度研究工具导出文件）
+downloads_dir = project_root / "data" / "exports"
+if downloads_dir.exists():
+    app.mount("/downloads", StaticFiles(directory=str(downloads_dir)), name="downloads")
+    print(f"✅ [System] 下载目录已挂载：/downloads -> {downloads_dir}")
+else:
+    print(f"⚠️ [Warning] 下载目录不存在：{downloads_dir}")
 
 # --- 6. 静态文件挂载 ---
 web_dir = project_root / "web"

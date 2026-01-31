@@ -21,33 +21,64 @@ class ScriptExecutor:
 
     def execute(self, script_path: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        执行 Python 脚本并返回结果
+        执行 Python 脚本并返回结果（文件传参版本）
+
+        通过临时 JSON 文件绕过 Windows 8KB 命令行限制
         :param script_path: 脚本的绝对路径
         :param args: 传递给脚本的参数字典
         :return: {'success': bool, 'result': Any, 'error': str}
         """
         try:
-            # 1. 将参数字典序列化为 JSON 字符串
-            args_json = json.dumps(args, ensure_ascii=False)
+            import tempfile
+            import sys
 
-            # 2. 使用 subprocess 执行脚本
+            # 1. 将参数写入临时 JSON 文件
+            temp_dir = Path(tempfile.gettempdir())
+            temp_file = temp_dir / f"temp_args_{id(args)}.json"
+
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(args, f, ensure_ascii=False)
+
+            # 2. 通过命令行传递临时文件路径
             result = subprocess.run(
-                ['python', str(script_path), args_json],
+                [sys.executable, str(script_path), str(temp_file)],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
                 encoding='utf-8'
             )
 
-            # 3. 检查执行是否成功
+            # 3. 自动清理临时文件
+            try:
+                temp_file.unlink()
+            except:
+                pass
+
+            # 4. 返回结果
             if result.returncode != 0:
+                # 尝试从 stdout 解析错误（脚本可能打印了 JSON 错误信息）
+                try:
+                    stdout_error = json.loads(result.stdout)
+                    if isinstance(stdout_error, dict) and 'error' in stdout_error:
+                        return {
+                            'success': False,
+                            'error': stdout_error['error'],
+                            'stdout': result.stdout,
+                            'stderr': result.stderr
+                        }
+                except:
+                    pass
+
+                # 如果 stdout 不是 JSON，返回 stderr 和 stdout
+                error_msg = result.stderr if result.stderr else result.stdout
                 return {
                     'success': False,
-                    'error': result.stderr,
-                    'stdout': result.stdout
+                    'error': error_msg,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr
                 }
 
-            # 4. 尝试解析 stdout 为 JSON
+            # 5. 尝试解析 stdout 为 JSON
             try:
                 parsed_result = json.loads(result.stdout)
                 return {

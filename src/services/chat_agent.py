@@ -30,6 +30,22 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from src.config.loader import settings
 from src.core.orchestrator import RiskAnalysisOrchestrator
 
+# 导入 AgentState（数据隧道机制）
+try:
+    from src.types.agent_state import AgentState
+    STATE_AVAILABLE = True
+except ImportError:
+    STATE_AVAILABLE = False
+    print("[Warning] AgentState 模块未找到，将使用简化状态管理")
+
+# 导入 ComplianceReporter（深度研究工具）
+try:
+    from src.services.report_agent import ComplianceReporter
+    REPORTER_AVAILABLE = True
+except ImportError:
+    REPORTER_AVAILABLE = False
+    print("[Warning] ComplianceReporter 模块未找到")
+
 # 知识库模块容错处理
 try:
     from src.services.knowledge_base import KnowledgeBase
@@ -284,6 +300,22 @@ class CustomsChatAgent:
         else:
             self.script_executor = None
 
+        # --- 4.7 初始化报告生成器（功能三：深度研究工具） ---
+        if REPORTER_AVAILABLE:
+            try:
+                self.reporter = ComplianceReporter(kb=kb if KnowledgeBase else None, llm_config=self.config)
+                print("[ChatAgent] ✅ 报告生成器已就绪（深度研究工具）")
+            except Exception as e:
+                print(f"[ChatAgent] ❌ 报告生成器初始化失败: {e}")
+                self.reporter = None
+        else:
+            self.reporter = None
+
+        # --- 4.8 确保导出目录存在 ---
+        from pathlib import Path
+        self.export_dir = Path("data/exports")
+        self.export_dir.mkdir(parents=True, exist_ok=True)
+
         # ========== 汇率查询工具 ==========
         def query_exchange_rate_tool(query: str) -> str:
             """
@@ -535,6 +567,246 @@ class CustomsChatAgent:
 """
         ))
 
+        # ========== 深度研究工具链（功能三：合规报告生成） ==========
+        async def generate_compliance_report_tool(input_text: str) -> str:
+            """
+            深度研究工具：生成完整的合规建议书或深度研判报告。
+
+            使用场景：
+            - 用户明确要求"写报告"、"生成合规建议书"、"深度研究"
+            - 需要对某个报关单或商品进行全面深度分析
+            - 需要生成正式的文档（Word 格式）
+
+            注意：此工具会生成完整的报告内容，但仅返回摘要。
+            """
+            if not self.reporter:
+                return "报告生成系统未就绪"
+
+            try:
+                from datetime import datetime
+                print(f"📑 [Tool Call] 深度研究工具启动：{input_text[:50]}...")
+
+                # 调用 ComplianceReporter 的流式生成
+                # 🔥 stream_chunks=False：避免 report_chunk 事件泄露到前端聊天界面
+                # 🔥 报告内容会自动累积到 reporter.report_text_buffer，无需手动收集
+                async for event_str in self.reporter.generate_stream(input_text, language="zh", stream_chunks=False):
+                    if not event_str.startswith("data: "):
+                        continue
+
+                    try:
+                        data = json.loads(event_str[6:])
+
+                        # 检测是否完成
+                        if data["type"] == "done":
+                            break
+
+                    except json.JSONDecodeError:
+                        continue
+
+                # 🔥 直接从 reporter 实例缓冲区读取完整报告
+                report_text = self.reporter.report_text_buffer
+
+                # 计算元数据
+                word_count = len(report_text)
+                metadata = {
+                    "topic": input_text[:100],
+                    "word_count": word_count,
+                    "generated_at": datetime.now().isoformat(),
+                    "has_content": len(report_text) > 0
+                }
+
+                # 🔥 关键：存储到实例变量（数据隧道）
+                self.report_buffer = report_text
+                self.report_metadata = metadata
+
+                # 🔥 返回摘要（不返回全文）
+                summary = f"""
+✅ 深度研究报告已生成
+
+📊 报告统计：
+- 主题：{input_text[:50]}...
+- 字数：{word_count} 字
+- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+💡 下一步操作：
+- 如需查看完整内容，请调用 read_report_buffer
+- 如需导出 Word 文档，请调用 export_document_file
+
+📋 报告摘要（前200字）：
+{report_text[:200]}...
+"""
+                return summary.strip()
+
+            except Exception as e:
+                return f"❌ 报告生成失败：{str(e)}"
+
+        async def export_document_file_tool(format_type: str = "word") -> str:
+            """
+            导出报告为文档文件（Word 格式）
+
+            使用场景：
+            - 用户要求"下载"、"导出"、"保存为文件"
+            - 用户要求"生成 Word 文档"
+            - report_buffer 中已有报告内容
+
+            注意：此工具会读取 report_buffer 并生成文件，返回下载链接。
+            """
+            try:
+                # 检查是否有报告内容
+                if not hasattr(self, 'report_buffer') or not self.report_buffer:
+                    return "❌ 没有可导出的报告内容，请先调用 generate_compliance_report"
+
+                print(f"📄 [Tool Call] 导出文档：{format_type} 格式")
+
+                # 调用 L4 脚本
+                if not self.script_executor:
+                    return "❌ 脚本执行器未就绪"
+
+                # 获取脚本路径（直接路径，不使用 SkillManager）
+                from pathlib import Path
+                project_root = Path(__file__).resolve().parent.parent.parent
+                script_path = project_root / "data" / "skills" / "document_exporter" / "scripts" / "export_engine.py"
+
+                # 准备参数
+                args = {
+                    "markdown": self.report_buffer,
+                    "output_dir": str(self.export_dir)
+                }
+
+                print(f"📄 [Debug] 脚本路径: {script_path}")
+                print(f"📄 [Debug] 脚本存在: {script_path.exists()}")
+                print(f"📄 [Debug] 报告长度: {len(self.report_buffer)} 字符")
+
+                # 执行导出
+                result = self.script_executor.execute(str(script_path), args)
+
+                print(f"📄 [Debug] 执行结果: success={result['success']}")
+                if not result['success']:
+                    print(f"📄 [Debug] 错误信息: {result.get('error', '')[:200]}")
+                    return f"❌ 导出失败：{result.get('error', '未知错误')}"
+
+                # 解析结果
+                file_data = result['result']
+                print(f"📄 [Debug] file_data 类型: {type(file_data)}")
+
+                if isinstance(file_data, str):
+                    # 如果返回的是字符串，尝试解析为 JSON
+                    try:
+                        file_data = json.loads(file_data)
+                    except:
+                        return f"❌ 导出结果格式异常：{file_data[:200]}"
+
+                if not isinstance(file_data, dict):
+                    return f"❌ 导出结果类型错误: {type(file_data)}"
+
+                # 获取文件名
+                filename = file_data.get('filename')
+                if not filename:
+                    print(f"📄 [Debug] file_data 键: {list(file_data.keys())}")
+                    print(f"📄 [Debug] file_data 内容: {str(file_data)[:500]}")
+                    filename = 'unknown.docx'
+
+                # 返回下载链接
+                message = file_data.get('message', 'Word 文档导出成功')
+                return f"✅ {message}\n\n📥 下载链接：/downloads/{filename}"
+
+            except Exception as e:
+                import traceback
+                print(f"📄 [Debug] 异常: {str(e)}")
+                print(f"📄 [Debug] 堆栈: {traceback.format_exc()}")
+                return f"❌ 导出异常：{str(e)}"
+
+        async def read_report_buffer_tool(query: str, context_lines: int = 20) -> str:
+            """
+            按需查阅报告缓冲区的具体内容
+
+            使用场景：
+            - 用户询问报告中某个具体章节的理由、法律依据或细节
+            - 用户追问"第二项风险是什么"、"结论部分怎么说"
+            - 需要引用报告中的具体段落
+
+            注意：此工具会从 report_buffer 中提取相关内容。
+            """
+            try:
+                # 检查是否有报告内容
+                if not hasattr(self, 'report_buffer') or not self.report_buffer:
+                    return "❌ 报告缓冲区为空"
+
+                print(f"🔍 [Tool Call] 查阅报告缓冲区：{query[:30]}...")
+
+                # 统一转为小写进行匹配（不区分大小写）
+                buffer_lower = self.report_buffer.lower()
+                query_lower = query.lower() if query else ""
+
+                lines = self.report_buffer.split('\n')
+
+                # 如果查询词为空，返回前 50 行（保底机制）
+                if not query_lower:
+                    return f"📄 报告前 50 行预览：\n\n{''.join(lines[:50])}"
+
+                # 搜索包含关键词的行（大小写不敏感）
+                matched_lines = []
+                for i, line in enumerate(lines):
+                    if query_lower in line.lower():
+                        # 提取上下文
+                        start = max(0, i - context_lines)
+                        end = min(len(lines), i + context_lines + 1)
+                        context = lines[start:end]
+                        matched_lines.append('\n'.join(context))
+
+                if matched_lines:
+                    return f"📄 报告相关内容：\n\n{'---'.join(matched_lines[:3])}"
+                else:
+                    # 保底：返回前 30 行
+                    return f"⚠️ 未找到包含'{query}'的内容，以下是报告开头：\n\n{''.join(lines[:30])}"
+
+            except Exception as e:
+                return f"❌ 查阅失败：{str(e)}"
+
+        # 注册三个深度研究工具
+        if self.reporter:
+            self.tools.append(Tool(
+                name="generate_compliance_report",
+                func=lambda x: "此工具仅支持异步环境运行",
+                coroutine=generate_compliance_report_tool,
+                description="""生成完整的合规建议书或深度研判报告。
+
+使用时机：当用户明确要求"写报告"、"生成合规建议书"、"深度研究"、"全面分析"时使用。
+
+参数：用户的研究主题或问题
+
+注意：此工具会生成报告但仅返回摘要，完整内容存储在缓冲区。
+"""
+            ))
+
+            self.tools.append(Tool(
+                name="export_document_file",
+                func=lambda x: "此工具仅支持异步环境运行",
+                coroutine=export_document_file_tool,
+                description="""导出报告为 Word 文档。
+
+使用时机：用户要求"下载"、"导出"、"生成 Word 文档"、"保存为文件"时使用。
+
+参数：format_type（可选，默认 "word"）
+
+前置条件：必须先调用 generate_compliance_report 生成报告
+"""
+            ))
+
+            self.tools.append(Tool(
+                name="read_report_buffer",
+                func=lambda x: "此工具仅支持异步环境运行",
+                coroutine=read_report_buffer_tool,
+                description="""查阅报告缓冲区的具体内容。
+
+使用时机：用户询问报告中某个具体章节的细节、理由、法律依据时使用。
+
+参数：query（查询关键词），context_lines（可选，默认 20 行上下文）
+
+示例：read_report_buffer("法律依据")
+"""
+            ))
+
         # --- 5. 构建图智能体 ---
         # 构建扩展能力提示（四级加载架构说明）
         skills_section = f"""
@@ -556,14 +828,47 @@ L1层（技能清单）- 当前已加载以下技能：
 → 返回计算结果: {{duty: 0, vat: 1300}}
 """ if self.skill_manager else ""
 
+        # 构建深度研究工具提示（功能三）
+        deep_research_section = """
+【深度研究工具链 - 按需感知机制】
+你拥有三个深度研究工具，用于生成完整的合规建议书或研判报告：
+
+1. **generate_compliance_report**：生成报告（生产者）
+   - 使用时机：用户明确要求"写报告"、"深度研究"、"全面分析"
+   - 返回：报告摘要（不含全文）
+   - 副作用：将全文存入 report_buffer（数据隧道）
+
+2. **export_document_file**：导出文档（消费者）
+   - 使用时机：用户要求"下载"、"导出 Word 文档"
+   - 返回：下载链接
+
+3. **read_report_buffer**：查阅细节（显微镜）
+   - 使用时机：用户追问报告中的具体内容
+   - 返回：相关段落
+
+【全自动任务链示例】
+用户："写份关于二手挖掘机进口的合规建议书，直接给我 Word 版"
+→ 调用 generate_compliance_report("二手挖掘机进口")
+→ 调用 export_document_file("word")
+→ 回复："✅ 报告已生成，📥 下载链接：..."
+
+【按需感知示例】
+用户："刚才那个报告里的第二项风险，法律依据是什么？"
+→ 调用 read_report_buffer("法律依据")
+→ 回复具体法律条款
+""" if self.reporter else ""
+
         self.system_prompt_text = f"""
 你是一名智慧口岸AI专家，负责报关咨询和自动审单。
-工作守则：
+
+【核心工作守则】
 1. 审计：用户粘贴报关单后，主动调用 `audit_declaration`。
 2. 咨询：法律疑问调用 `search_customs_regulations`。
 3. 协同：审单发现风险后，可检索法规条文来支撑你的解释。
 4. 语言：严禁跳出用户当前使用的语言（中文或越南语）。
+
 {skills_section}
+{deep_research_section}
 """
 
         self.agent = create_react_agent(
@@ -588,6 +893,7 @@ L1层（技能清单）- 当前已加载以下技能：
 
             config = {"configurable": {"thread_id": session_id}}
             has_sent_content = False
+            is_in_tool_call = False  # 🔥 工具调用状态标志
 
             # 使用 astream_events v2 实现极致打字机效果
             async for event in self.agent.astream_events(
@@ -600,13 +906,17 @@ L1层（技能清单）- 当前已加载以下技能：
                 if event_type == "on_chat_model_stream":
                     chunk = event["data"].get("chunk")
                     if not chunk: continue
-                    
+
+                    # 🔥 如果在工具调用中，跳过 LLM 输出（防止"二次渲染"）
+                    if is_in_tool_call:
+                        continue
+
                     # 提取正文
                     content = getattr(chunk, 'content', '')
                     if content:
                         has_sent_content = True
                         yield f"data: {json.dumps({'type': 'answer', 'content': content}, ensure_ascii=False)}\n\n"
-                    
+
                     # 提取思考流
                     add_kwargs = getattr(chunk, 'additional_kwargs', {})
                     reasoning = add_kwargs.get('reasoning_content', '')
@@ -615,10 +925,51 @@ L1层（技能清单）- 当前已加载以下技能：
 
                 elif event_type == "on_tool_start":
                     t_name = event["name"]
-                    yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': t_name, 'content': f'正在调用工具 [{t_name}]...'}, ensure_ascii=False)}\n\n"
+
+                    # 🔥 设置工具调用标志（阻止 LLM 输出）
+                    is_in_tool_call = True
+
+                    # 定义工具的展示配置（Display Config）
+                    display_config = {
+                        "generate_compliance_report": {
+                            "title": "正在开启深度研判流水线",
+                            "animation": "fade",
+                            "show_progress": True,
+                            "status_color": "cyan"
+                        },
+                        "export_document_file": {
+                            "title": "正在进行公文排版与 Word 渲染...",
+                            "animation": "fade",
+                            "show_progress": True,
+                            "status_color": "blue"
+                        },
+                        "read_report_buffer": {
+                            "title": "正在从内部缓冲区调阅相关章节...",
+                            "animation": "fade",
+                            "show_progress": False,
+                            "status_color": "purple"
+                        }
+                    }.get(t_name, None)
+
+                    # 构造响应数据
+                    response_data = {
+                        'type': 'tool_start',
+                        'tool_name': t_name,
+                        'content': f'正在调用工具 [{t_name}]...'
+                    }
+
+                    # 如果有展示配置，则添加到响应中
+                    if display_config:
+                        response_data['display_config'] = display_config
+
+                    yield f"data: {json.dumps(response_data, ensure_ascii=False)}\n\n"
 
                 elif event_type == "on_tool_end":
                     t_name = event["name"]
+
+                    # 🔥 清除工具调用标志（允许后续 LLM 输出）
+                    is_in_tool_call = False
+
                     # 获取工具执行结果
                     tool_output = event["data"].get("output", "")
                     # 格式化工具结果（限制长度，避免过长）

@@ -68,11 +68,14 @@ resources:
 
 ## L4 脚本调用（快速计算）
 
-对于简单的税费计算，可以直接调用 Python 脚本进行自动计算：
+对于简单的税费计算，可以直接调用 Python 脚本进行自动计算。
 
+**调用格式**：
 ```
-run_skill_script("tax_calculator", "calculate_duty.py", '{"cif_price": <CIF价格>, "hs_code": "<HS编码>"}')
+tax_calculator|calculate_duty.py|{"cif_price": <CIF价格>, "hs_code": "<HS编码>"}
 ```
+
+**注意**：三个字段用竖线"|"分隔，参数必须是有效的 JSON 格式。
 
 **脚本特性**：
 - HS编码 `85423100`（芯片）：关税 0%，增值税 13%
@@ -80,5 +83,5 @@ run_skill_script("tax_calculator", "calculate_duty.py", '{"cif_price": <CIF价�
 - 自动计算并返回 JSON 格式结果
 
 **示例**：
-- 输入：`{"cif_price": 10000, "hs_code": "85423100"}`
+- 输入：`tax_calculator|calculate_duty.py|{"cif_price": 10000, "hs_code": "85423100"}`
 - 输出：`{"duty": 0, "vat": 1300, "total": 1300, "duty_rate": 0.0, "vat_rate": 0.13, "hs_code": "85423100"}`
