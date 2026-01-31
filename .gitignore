@@ -185,3 +185,5 @@ nul
 =0.8.11
 .claudetest_records.md
 tmpclaude*
+**/.claude/
+**/.claude/**
