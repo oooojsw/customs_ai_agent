@@ -2,6 +2,7 @@ import os
 import shutil
 import asyncio
 import json
+import time
 import numpy as np
 from pathlib import Path
 from typing import List, AsyncGenerator
@@ -16,7 +17,13 @@ from src.services.pdf_service import PDFService, PDFProcessingError
 from src.database.pdf_repository import PDFRepository
 
 class KnowledgeBase:
-    def __init__(self, process_pdfs: bool = True):
+    def __init__(self, process_pdfs: bool = False):
+        """
+        初始化知识库
+
+        Args:
+            process_pdfs: 是否处理PDF文件（默认False，只有前端手动触发时才为True）
+        """
         # 1. 定义绝对路径
         self.base_dir = Path(__file__).resolve().parent.parent.parent
         self.data_path = self.base_dir / "data" / "knowledge"
@@ -27,10 +34,11 @@ class KnowledgeBase:
         # 确保目录存在
         self.vector_db_path.mkdir(parents=True, exist_ok=True)
 
-        # PDF处理配置
+        # PDF处理配置（默认禁用，只有手动触发时才启用）
         self.process_pdfs = process_pdfs
-        self.pdf_service = None  # 延迟初始化
-        self.pdf_repo = PDFRepository() if process_pdfs else None
+        self.pdf_service = None  # 保留兼容性（废弃）
+        self.hybrid_pdf_service = None  # 混合解析服务（延迟初始化）
+        self.pdf_repo = PDFRepository()
 
         # 索引状态管理
         self.is_rebuilding = False
@@ -45,7 +53,7 @@ class KnowledgeBase:
         self.file_count = 0
         self._rebuild_lock = asyncio.Lock()
 
-        print(f"⚙️ [KnowledgeBase] 初始化中文 Embedding 模型 (bge-small-zh-v1.5 轻量版)...")
+        print(f"[KnowledgeBase] 初始化中文 Embedding 模型 (bge-small-zh-v1.5 轻量版)...")
         try:
             self.embeddings = HuggingFaceEmbeddings(
                 model_name="BAAI/bge-small-zh-v1.5",
@@ -54,13 +62,13 @@ class KnowledgeBase:
                 show_progress=True  # 显示下载进度
             )
         except Exception as e:
-            print(f"❌ [KnowledgeBase] Embedding 模型加载失败: {e}")
+            print(f"[错误] [KnowledgeBase] Embedding 模型加载失败: {e}")
             raise e
 
         # 加载或重建索引
         self.vector_store = self._load_or_create_index()
 
-        # ❌ 不再自动启动后台PDF处理任务，改为用户手动触发
+        # [错误] 不再自动启动后台PDF处理任务，改为用户手动触发
         # self._pdf_task = None
         # if self.process_pdfs:
         #     self._pdf_task = asyncio.create_task(self._process_pdfs_background())
@@ -70,7 +78,7 @@ class KnowledgeBase:
         index_file = self.vector_db_path / "index.faiss"
         
         if index_file.exists():
-            print("📂 [KnowledgeBase] 加载本地向量索引 (Hit Cache)...")
+            print("[文件] [KnowledgeBase] 加载本地向量索引 (Hit Cache)...")
             try:
                 return FAISS.load_local(
                     str(self.vector_db_path), 
@@ -78,15 +86,15 @@ class KnowledgeBase:
                     allow_dangerous_deserialization=True 
                 )
             except Exception as e:
-                print(f"⚠️ [KnowledgeBase] 索引文件损坏，正在重建: {e}")
+                print(f"[警告] [KnowledgeBase] 索引文件损坏，正在重建: {e}")
                 return self._create_index()
         else:
-            print("⚙️ [KnowledgeBase] 本地无索引，正在重建向量数据库...")
+            print("[设置] [KnowledgeBase] 本地无索引，正在重建向量数据库...")
             return self._create_index()
 
     def _create_index(self):
         if not self.data_path.exists():
-            print(f"⚠️ [KnowledgeBase] 数据目录不存在: {self.data_path}，将创建空索引。")
+            print(f"[警告] [KnowledgeBase] 数据目录不存在: {self.data_path}，将创建空索引。")
             return FAISS.from_texts(["初始化空白文档"], self.embeddings)
 
         # 1. 加载文档
@@ -100,14 +108,14 @@ class KnowledgeBase:
             try:
                 documents.extend(loader.load())
             except Exception as e:
-                print(f"⚠️ [KnowledgeBase] 加载文件出错: {e}")
+                print(f"[警告] [KnowledgeBase] 加载文件出错: {e}")
 
         if not documents:
-            print("⚠️ [KnowledgeBase] 未找到文档，创建空索引。")
+            print("[警告] [KnowledgeBase] 未找到文档，创建空索引。")
             return FAISS.from_texts(["无数据"], self.embeddings)
 
         # 2. 切分文档（增大分块以包含更多上下文）
-        # 🔥 关键调整：避免在分号处切分，防止产生只有"；"的碎片chunk
+        # [重要] 关键调整：避免在分号处切分，防止产生只有"；"的碎片chunk
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1500,  # 增加到 1500 字符，确保包含完整的段落
             chunk_overlap=150,  # 增加重叠以保持上下文连贯性
@@ -123,17 +131,17 @@ class KnowledgeBase:
                 "？",          # 问号
                 "，",          # 逗号
                 " ",          # 空格
-                # ❌ 移除"；\n"和"；"，避免在分号处切分产生无意义chunk
+                # [错误] 移除"；\n"和"；"，避免在分号处切分产生无意义chunk
                 ""            # 最后才按字符切分
             ]
         )
         chunks = text_splitter.split_documents(documents)
 
-        # 🔥 过滤掉小于50字符的低质量chunk（避免"；"等无意义chunk）
+        # [重要] 过滤掉小于50字符的低质量chunk（避免"；"等无意义chunk）
         original_count = len(chunks)
         chunks = [c for c in chunks if len(c.page_content) >= 50]
         filtered_count = original_count - len(chunks)
-        print(f"📄 [KnowledgeBase] 切分出 {original_count} 个片段，过滤 {filtered_count} 个小片段，保留 {len(chunks)} 个有效片段...")
+        print(f"[文档] [KnowledgeBase] 切分出 {original_count} 个片段，过滤 {filtered_count} 个小片段，保留 {len(chunks)} 个有效片段...")
 
         # 3. 创建向量库 (内存中)
         vector_store = FAISS.from_documents(chunks, self.embeddings)
@@ -159,142 +167,194 @@ class KnowledgeBase:
                 shutil.move(str(temp_path / file_name), str(self.vector_db_path / file_name))
 
             shutil.rmtree(temp_path)
-            print(f"💾 [KnowledgeBase] 索引已保存至: {self.vector_db_path}")
+            print(f"[保存] [KnowledgeBase] 索引已保存至: {self.vector_db_path}")
         except Exception as e:
-            print(f"❌ [KnowledgeBase] 保存索引失败: {e}")
+            print(f"[错误] [KnowledgeBase] 保存索引失败: {e}")
         
         return vector_store
 
-    def _init_pdf_service_if_needed(self):
-        """延迟初始化PDF服务"""
-        if self.pdf_service is None and self.process_pdfs:
+    def _init_hybrid_pdf_service_if_needed(self):
+        """延迟初始化混合PDF服务"""
+        if self.hybrid_pdf_service is None and self.process_pdfs:
             try:
-                self.pdf_service = PDFService()
+                from src.services.hybrid_pdf_service import HybridPDFService
+                self.hybrid_pdf_service = HybridPDFService()
+                print("[KnowledgeBase] 混合PDF解析服务已初始化")
             except Exception as e:
-                print(f"[KnowledgeBase] PDF服务初始化失败，将跳过PDF处理: {e}")
+                print(f"[KnowledgeBase] 混合PDF服务初始化失败，将跳过PDF处理: {e}")
                 self.process_pdfs = False
 
-    async def _process_pdfs(self) -> List[Document]:
+    async def _process_pdfs(self) -> AsyncGenerator[dict, None]:
         """
-        处理所有PDF文件
+        处理PDF文件（使用混合解析服务）- 异步生成器版本
 
-        流程：
-        1. 扫描data/knowledge/目录下的所有PDF
-        2. 对每个PDF：
-           a. 计算文件哈希
-           b. 查询SQLite缓存
-           c. 如果缓存有效 → 使用缓存
-           d. 如果缓存无效 → 调用Marker提取
-           e. 保存缓存
-        3. 返回Document列表
+        注意：只有通过API手动触发（前端点击）时才会调用此方法
+        服务启动时由于process_pdfs=False，不会自动处理
 
-        Returns:
-            List[Document]: 包含所有PDF文本的Document对象列表
+        Yields:
+            dict: 包含类型和数据的字典
+            - {"type": "log", "payload": {...}} - 进度日志（通过SSE发送到前端）
+            - {"type": "result", "doc": Document(...)} - 处理结果（文档对象）
         """
+        # 安全检查：确保只有手动触发时才处理
         if not self.process_pdfs:
-            return []
+            print("[KnowledgeBase] PDF处理已禁用（等待手动触发）")
+            return
 
-        self._init_pdf_service_if_needed()
-        if not self.pdf_service:
-            return []
+        self._init_hybrid_pdf_service_if_needed()
+        if not self.hybrid_pdf_service:
+            return
 
         # 扫描PDF文件
         pdf_files = list(self.data_path.glob("**/*.pdf"))
 
         if not pdf_files:
-            print("📂 [KnowledgeBase] 未发现PDF文件")
-            return []
+            print("[KnowledgeBase] 未发现PDF文件")
+            return
 
-        print(f"📄 [KnowledgeBase] 发现 {len(pdf_files)} 个PDF文件")
+        print(f"\n{'='*60}")
+        print(f"[KnowledgeBase] 手动触发：开始处理 {len(pdf_files)} 个PDF文件")
+        print(f"{'='*60}")
 
-        documents = []
+        # 发送开始消息
+        yield {
+            "type": "log",
+            "payload": {
+                "type": "step",
+                "message": f"开始处理 {len(pdf_files)} 个PDF文件（混合模式：快速提取 + 智能OCR）",
+                "step": "processing_pdfs",
+                "sub_mode": "hybrid"
+            }
+        }
+
         cache_hits = 0
-        cache_misses = 0
+        ocr_triggered = 0
+        pypdfium2_count = 0
         processing_errors = 0
+        total_chars = 0
+        total_time = 0
 
         for idx, pdf_path in enumerate(pdf_files, 1):
             try:
-                # 相对路径 (用于存储)
-                rel_path = str(pdf_path.relative_to(self.base_dir))
                 file_name = pdf_path.name
-                file_size = pdf_path.stat().st_size
+                file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
 
-                print(f"\n📄 [{idx}/{len(pdf_files)}] 处理: {file_name}")
+                # 更新进度
+                progress = round((idx / len(pdf_files)) * 100, 1)
+                yield {
+                    "type": "log",
+                    "payload": {
+                        "type": "progress",
+                        "current_file": file_name,
+                        "current": idx,
+                        "total": len(pdf_files),
+                        "percentage": progress
+                    }
+                }
 
-                # 1. 计算文件哈希
-                print(f"   计算 SHA256 哈希...")
-                file_hash = await asyncio.to_thread(
-                    PDFService.calculate_file_hash,
-                    str(pdf_path)
+                # 打印处理开始信息
+                print(f"\n{'─'*60}")
+                print(f"[PDF {idx}/{len(pdf_files)}] {file_name}")
+                print(f"  文件大小: {file_size_mb:.2f} MB")
+                print(f"  开始时间: {time.strftime('%H:%M:%S')}")
+
+                # 使用混合解析服务（内部进度回调转换为yield）
+                text, method, time_cost = await self._extract_pdf_with_progress(
+                    pdf_path, file_name
                 )
 
-                # 2. 查询缓存
-                print(f"   💾 查询缓存...")
-                cached_doc = await self.pdf_repo.get_by_hash(file_hash)
+                char_count = len(text)
+                total_chars += char_count
+                total_time += time_cost
 
-                # 3. 判断缓存是否有效
-                if cached_doc and cached_doc.is_valid:
-                    print(f"   ✅ 缓存命中 ({cached_doc.char_count}字符)")
+                # 打印处理完成信息
+                print(f"  提取方法: {method}")
+                print(f"  文本字符: {char_count:,} 字符")
+                print(f"  处理耗时: {time_cost:.2f} 秒")
+                print(f"  完成时间: {time.strftime('%H:%M:%S')}")
+
+                # 统计
+                if method == "cached":
                     cache_hits += 1
-                    markdown_text = cached_doc.processed_text
-                else:
-                    print(f"   ⚠️ 缓存未命中，调用Marker提取...")
-                    cache_misses += 1
+                    print(f"  状态: [缓存命中] ")
+                elif method == "pypdfium2":
+                    pypdfium2_count += 1
+                    print(f"  状态: [快速提取] ")
+                elif method == "rapidocr":
+                    ocr_triggered += 1
+                    print(f"  状态: [OCR识别] ")
 
-                    # 调用PDF服务提取
-                    try:
-                        markdown_text, processing_time = await self.pdf_service.extract_text_async(
-                            str(pdf_path),
-                            validate_quality=True
-                        )
-
-                        # 保存缓存
-                        await self.pdf_repo.save_cache(
-                            file_path=rel_path,
-                            file_name=file_name,
-                            file_hash=file_hash,
-                            file_size=file_size,
-                            processed_text=markdown_text,
-                            processing_time=processing_time,
-                            marker_version="0.3.2"
-                        )
-                        print(f"   💾 缓存已保存")
-
-                    except PDFProcessingError as e:
-                        print(f"   [PDF] 处理失败: {e}")
-                        processing_errors += 1
-                        continue
-
-                # 4. 创建Document对象
+                # 创建Document对象并yield
                 doc = Document(
-                    page_content=markdown_text,
+                    page_content=text,
                     metadata={
                         "source": file_name,
-                        "file_path": rel_path,
+                        "file_path": str(pdf_path),
                         "file_type": "pdf",
-                        "char_count": len(markdown_text),
-                        "file_hash": file_hash
+                        "char_count": char_count,
+                        "extraction_method": method,
+                        "processing_time": time_cost
                     }
                 )
-                documents.append(doc)
+                yield {
+                    "type": "result",
+                    "doc": doc
+                }
 
             except Exception as e:
-                print(f"   ❌ 处理异常: {e}")
+                print(f"  [错误] 处理异常: {e}")
                 processing_errors += 1
+                yield {
+                    "type": "log",
+                    "payload": {
+                        "type": "error",
+                        "file": pdf_path.name,
+                        "message": f"处理失败: {str(e)}"
+                    }
+                }
                 continue
 
         # 统计信息
         print(f"\n{'='*60}")
-        print(f"📊 [KnowledgeBase] PDF处理统计:")
-        print(f"   总文件数: {len(pdf_files)}")
-        print(f"   缓存命中: {cache_hits}")
-        print(f"   新处理: {cache_misses}")
-        print(f"   处理失败: {processing_errors}")
+        print(f"[KnowledgeBase] PDF处理统计报告")
+        print(f"{'='*60}")
+        print(f"  总文件数: {len(pdf_files)} 个")
+        print(f"  └─ 快速提取 (pypdfium2): {pypdfium2_count} 个")
+        print(f"  └─ OCR识别 (rapidocr): {ocr_triggered} 个")
+        print(f"  └─ 缓存命中 (cached): {cache_hits} 个")
+        print(f"  └─ 处理失败: {processing_errors} 个")
+        print(f"{'─'*60}")
+        print(f"  总字符数: {total_chars:,} 字符")
+        print(f"  总耗时: {total_time:.2f} 秒")
         if len(pdf_files) > 0:
-            print(f"   成功率: {((len(pdf_files)-processing_errors)/len(pdf_files)*100):.1f}%")
+            avg_time = total_time / len(pdf_files)
+            print(f"  平均耗时: {avg_time:.2f} 秒/文件")
+            success_rate = ((len(pdf_files)-processing_errors)/len(pdf_files)*100)
+            print(f"  成功率: {success_rate:.1f}%")
         print(f"{'='*60}\n")
 
-        return documents
+    async def _extract_pdf_with_progress(
+        self,
+        pdf_path: Path,
+        file_name: str
+    ) -> tuple[str, str, float]:
+        """
+        提取PDF文本，并在处理过程中yield OCR进度
+
+        Args:
+            pdf_path: PDF文件路径
+            file_name: 文件名
+
+        Returns:
+            (text, method, time_cost)
+        """
+        # 使用混合解析服务
+        text, method, time_cost = await self.hybrid_pdf_service.extract_text_with_fallback(
+            str(pdf_path),
+            progress_callback=lambda msg: None  # 不使用回调，改为内部处理
+        )
+
+        return text, method, time_cost
 
     async def _process_pdfs_background(self):
         """后台异步处理PDF任务"""
@@ -302,12 +362,12 @@ class KnowledgeBase:
             # 等待一段时间，让主服务先启动
             await asyncio.sleep(5)
 
-            print("⚙️ [KnowledgeBase] 后台任务: 开始处理PDF文件...")
+            print("[设置] [KnowledgeBase] 后台任务: 开始处理PDF文件...")
             pdf_docs = await self._process_pdfs()
 
             if pdf_docs:
                 # 将PDF文档添加到现有索引
-                print(f"⚙️ [KnowledgeBase] 正在添加 {len(pdf_docs)} 个PDF文档到索引...")
+                print(f"[设置] [KnowledgeBase] 正在添加 {len(pdf_docs)} 个PDF文档到索引...")
 
                 # 切分PDF文本（优化分隔符，避免在分号处切分）
                 text_splitter = RecursiveCharacterTextSplitter(
@@ -318,16 +378,16 @@ class KnowledgeBase:
                         "\n\n\n", "\n\n", "\n",
                         "。", "！", "？",
                         "，", " ",
-                        # ❌ 移除"；\n"和"；"，避免在分号处切分产生无意义chunk
+                        # [错误] 移除"；\n"和"；"，避免在分号处切分产生无意义chunk
                         ""
                     ]
                 )
                 chunks = text_splitter.split_documents(pdf_docs)
 
-                # 🔥 过滤掉小于50字符的低质量chunk
+                # [重要] 过滤掉小于50字符的低质量chunk
                 original_count = len(chunks)
                 chunks = [c for c in chunks if len(c.page_content) >= 50]
-                print(f"📄 过滤: {original_count} → {len(chunks)} 个chunk（过滤了{original_count - len(chunks)}个小片段）")
+                print(f"[文档] 过滤: {original_count} → {len(chunks)} 个chunk（过滤了{original_count - len(chunks)}个小片段）")
 
                 # 向量化
                 new_vector_store = await asyncio.to_thread(
@@ -344,12 +404,12 @@ class KnowledgeBase:
                     self._save_index,
                     self.vector_store
                 )
-                print(f"✅ [KnowledgeBase] PDF索引更新完成 ({len(chunks)}个片段)")
+                print(f"[成功] [KnowledgeBase] PDF索引更新完成 ({len(chunks)}个片段)")
             else:
-                print("ℹ️ [KnowledgeBase] 无PDF文件需要处理")
+                print("[信息] [KnowledgeBase] 无PDF文件需要处理")
 
         except Exception as e:
-            print(f"❌ [KnowledgeBase] PDF后台任务失败: {e}")
+            print(f"[错误] [KnowledgeBase] PDF后台任务失败: {e}")
             import traceback
             traceback.print_exc()
 
@@ -375,14 +435,14 @@ class KnowledgeBase:
                 shutil.move(str(temp_path / file_name), str(self.vector_db_path / file_name))
 
             shutil.rmtree(temp_path)
-            print(f"💾 [KnowledgeBase] 索引已保存至: {self.vector_db_path}")
+            print(f"[保存] [KnowledgeBase] 索引已保存至: {self.vector_db_path}")
         except Exception as e:
-            print(f"❌ [KnowledgeBase] 保存索引失败: {e}")
+            print(f"[错误] [KnowledgeBase] 保存索引失败: {e}")
 
     def get_retriever(self):
         return self.vector_store.as_retriever(search_kwargs={"k": 3})
 
-    # 🔥🔥🔥 优化后的搜索方法 🔥🔥🔥
+    # [重要][重要][重要] 优化后的搜索方法 [重要][重要][重要]
     async def search_with_score(self, query: str, k: int = 6):
         """
         异步执行向量检索并返回真实相似度分数
@@ -390,7 +450,7 @@ class KnowledgeBase:
         if not self.vector_store:
             return []
 
-        # ✅ 关键优化：将同步的 FAISS 搜索放入线程池，防止阻塞 FastAPI 主循环
+        # [成功] 关键优化：将同步的 FAISS 搜索放入线程池，防止阻塞 FastAPI 主循环
         try:
             results = await asyncio.to_thread(
                 self.vector_store.similarity_search_with_score, 
@@ -398,7 +458,7 @@ class KnowledgeBase:
                 k=k
             )
         except Exception as e:
-            print(f"❌ [KnowledgeBase] 搜索出错: {e}")
+            print(f"[错误] [KnowledgeBase] 搜索出错: {e}")
             return []
 
         import math
@@ -427,9 +487,12 @@ class KnowledgeBase:
             files = list(self.data_path.glob("**/*.txt")) + list(self.data_path.glob("**/*.md")) + list(self.data_path.glob("**/*.pdf"))
         return files
 
-    async def rebuild_index_stream(self) -> AsyncGenerator[str, None]:
+    async def rebuild_index_stream(self, force_process_pdfs: bool = True) -> AsyncGenerator[str, None]:
         """
-        流式重建索引 (SSE响应)
+        流式重建索引（手动触发）
+
+        Args:
+            force_process_pdfs: 强制处理PDF（默认True，因为这是手动触发）
 
         Yields:
             str: SSE格式的JSON事件
@@ -446,10 +509,14 @@ class KnowledgeBase:
             self._rebuild_cancelled = False
 
         try:
+            # 临时启用PDF处理（手动触发）
+            original_process_pdfs = self.process_pdfs
+            self.process_pdfs = force_process_pdfs
+
             # 1. 初始化事件
             yield self._format_sse({
                 "type": "init",
-                "message": "开始重建知识库索引"
+                "message": "开始重建知识库索引（手动触发）"
             })
 
             # 2. 扫描文件
@@ -473,7 +540,7 @@ class KnowledgeBase:
 
             yield self._format_sse({
                 "type": "step",
-                "message": f"发现 {total_files} 个文件，开始处理...",
+                "message": f"发现 {total_files} 个文件（PDF: {len(pdf_files)}, 文本: {len(txt_files)}）",
                 "step": "scanning"
             })
 
@@ -516,58 +583,30 @@ class KnowledgeBase:
                     documents.extend(docs)
 
                 except Exception as e:
-                    print(f"⚠️ [KnowledgeBase] 加载文件 {file_path.name} 失败: {e}")
+                    print(f"[警告] [KnowledgeBase] 加载文件 {file_path.name} 失败: {e}")
                     continue
 
-            # 再处理PDF文件
+            # 再处理PDF文件（使用混合解析服务）
             if pdf_files and self.process_pdfs:
                 yield self._format_sse({
                     "type": "step",
-                    "message": f"正在处理 {len(pdf_files)} 个PDF文件...",
-                    "step": "processing_pdfs"
+                    "message": f"正在处理 {len(pdf_files)} 个PDF文件（混合模式：快速提取 + 智能OCR）...",
+                    "step": "processing_pdfs",
+                    "sub_mode": "hybrid",
+                    "pdf_count": len(pdf_files)
                 })
 
-                for idx, file_path in enumerate(pdf_files, 1):
-                    # 检查是否取消
-                    if self._rebuild_cancelled:
-                        yield self._format_sse({
-                            "type": "cancelled",
-                            "message": "索引重建已取消"
-                        })
-                        return
+                # 使用混合解析服务处理PDF（异步生成器模式）
+                pdf_documents = []
+                async for event in self._process_pdfs():
+                    if event["type"] == "log":
+                        # 将进度通过 SSE 发送到前端
+                        yield self._format_sse(event["payload"])
+                    elif event["type"] == "result":
+                        # 累积最终需要的文档对象
+                        pdf_documents.append(event["doc"])
 
-                    try:
-                        # 更新进度（PDF文件占后50%）
-                        pdf_progress = 50 + round((idx / len(pdf_files)) * 50, 1)
-                        self.progress["current"] = len(txt_files) + idx
-                        self.progress["current_file"] = file_path.name
-                        self.progress["percentage"] = pdf_progress
-
-                        yield self._format_sse({
-                            "type": "progress",
-                            "current": len(txt_files) + idx,
-                            "total": total_files,
-                            "current_file": file_path.name,
-                            "percentage": pdf_progress
-                        })
-
-                        # 处理PDF
-                        if self.pdf_service is None:
-                            from src.services.pdf_service import PDFService
-                            self.pdf_service = PDFService()
-
-                        pdf_text, _ = await asyncio.to_thread(
-                            self.pdf_service.extract_text,
-                            str(file_path)
-                        )
-
-                        if pdf_text and len(pdf_text.strip()) > 100:
-                            doc = Document(page_content=pdf_text, metadata={"source": file_path.name})
-                            documents.append(doc)
-
-                    except Exception as e:
-                        print(f"⚠️ [KnowledgeBase] 处理PDF {file_path.name} 失败: {e}")
-                        continue
+                documents.extend(pdf_documents)
 
             if not documents:
                 yield self._format_sse({
@@ -695,6 +734,9 @@ class KnowledgeBase:
             })
 
         finally:
+            # 恢复原始设置
+            self.process_pdfs = original_process_pdfs
+
             async with self._rebuild_lock:
                 self.is_rebuilding = False
                 self._rebuild_cancelled = False

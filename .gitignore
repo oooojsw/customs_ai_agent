@@ -143,6 +143,11 @@ htmlcov/
 # 忽略测试数据文件（如果不是必要的）
 test_batch.csv
 test_batch.xlsx
+test_results_ui.json
+
+# 忽略截图和脚本文件夹（临时测试文件）
+screenshots/
+scripts/
 
 # 忽略 AI 工具配置和缓存
 npm-cache/         # npm 缓存
