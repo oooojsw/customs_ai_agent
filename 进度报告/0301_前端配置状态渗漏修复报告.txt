@@ -1,0 +1,142 @@
+================================================================================
+                     前端配置管理"状态渗漏"问题修复报告
+================================================================================
+                              2026年3月1日 22:30
+
+【问题描述】
+--------------------------------------------------------------------------------
+用户在使用过程中发现一个严重的前端交互问题：
+
+1. 在某个厂商（如 DeepSeek）的 API Key 输入框填入 key
+2. 不点击"保存并应用"，直接切换到另一个厂商（如 SiliconFlow）
+3. 再切换回来 —— 发现 DeepSeek 的 key 已经没了
+4. 即使对每个厂商都正常保存一遍，再切换 —— key 依然不显示
+
+【问题根源分析】
+--------------------------------------------------------------------------------
+1. 原有架构问题：
+   - 依赖 DOM 输入框存取数据，没有独立的状态管理
+   - 切换厂商时直接清空输入框，再从后端拉取数据
+   - 如果后端没有该厂商的数据（或请求失败），输入框就变成空的
+   - 浏览器密码自动填充会干扰输入框内容
+
+2. 竞态条件问题：
+   - 快速切换厂商时，后端请求返回顺序不可控
+   - 旧请求的结果可能覆盖新请求的结果
+
+【解决方案：状态驱动架构】
+--------------------------------------------------------------------------------
+采用"状态驱动"（State-driven）架构，彻底抛弃依赖 DOM 的做法：
+
+1. 引入全局状态缓存（llmStateCache / imageStateCache）
+   - 每个厂商的数据独立存储在缓存对象中
+   - 切换厂商时优先从缓存读取，不轻易请求后端
+
+2. 实时键盘监听
+   - 用户敲击键盘时立即将输入内容存入缓存
+   - 实现"输入即保存"，防止数据丢失
+
+3. 统一渲染 UI
+   - 所有 UI 更新通过 renderLLMForm() / renderImageForm() 统一处理
+   - 保证数据与界面的一致性
+
+4. 智能后端拉取
+   - 只在缓存为空时才去后端请求数据
+   - 避免覆盖用户刚输入但未保存的内容
+
+5. 防止浏览器干扰
+   - 将 type="password" 改为 type="text"
+   - 添加 autocomplete="new-password" 和 -webkit-text-security: disc;
+   - 阻止浏览器自动填充破坏输入框内容
+
+【修改文件清单】
+--------------------------------------------------------------------------------
+1. web/index.html
+   - llmApiKey: type="password" → type="text" + autocomplete="new-password" + style
+   - imageApiKey: 同上修改
+   - 脚本版本号更新为 v=3.3.0-state-driven
+
+2. web/js/llm_config.js (完全重构)
+   - 新增 llmStateCache 全局缓存对象
+   - 新增 setupLLMInputListeners() 实时键盘监听
+   - 新增 renderLLMForm() 统一渲染函数
+   - 新增 fetchProviderConfigFromDB() 后端拉取函数
+   - 重构 updateProviderPresets() 核心切换逻辑
+   - 重构 initLLMConfig() 初始化函数
+   - 新增 window 全局函数暴露
+
+3. web/js/image_config.js (完全重构)
+   - 新增 imageStateCache 全局缓存对象
+   - 新增 setupImageInputInputListeners() 实时键盘监听
+   - 新增 renderImageForm() 统一渲染函数
+   - 新增 fetchImageProviderConfigFromDB() 后端拉取函数
+   - 重构 updateImageProviderPresets() 核心切换逻辑
+   - 重构 initImageConfig() 初始化函数
+   - 新增 window 全局函数暴露
+
+【核心代码逻辑】
+--------------------------------------------------------------------------------
+1. 状态缓存结构：
+   llmStateCache = {
+       'deepseek': { apiKey: 'sk-xxx', baseUrl: 'https://...', modelName: '...', ... },
+       'siliconflow': { apiKey: 'sk-yyy', baseUrl: 'https://...', ... },
+       ...
+   }
+
+2. 切换厂商逻辑（核心）：
+   async function updateProviderPresets() {
+       const provider = document.getElementById('llmProvider').value;
+       
+       // 只在缓存为空时才去后端拉取
+       if (!llmStateCache[provider]) {
+           await fetchProviderConfigFromDB(provider);
+       }
+       
+       // 根据缓存重绘界面
+       renderLLMForm(provider);
+       fetchModels();
+   }
+
+3. 实时监听逻辑：
+   function setupLLMInputListeners() {
+       const inputMapping = {
+           'llmApiKey': 'apiKey',
+           'llmBaseUrl': 'baseUrl',
+           ...
+       };
+       
+       Object.keys(inputMapping).forEach(id => {
+           document.getElementById(id).addEventListener('input', (e) => {
+               const provider = document.getElementById('llmProvider').value;
+               if (!llmStateCache[provider]) {
+                   llmStateCache[provider] = {};
+               }
+               llmStateCache[provider][inputMapping[id]] = e.target.value;
+           });
+       });
+   }
+
+【测试验证】
+--------------------------------------------------------------------------------
+1. 打开页面，在 DeepSeek 输入框填入 "12345"
+2. 不点击"保存"，直接切换到 SiliconFlow
+3. 在 SiliconFlow 输入框填入 "67890"
+4. 切换回 DeepSeek，检查是否仍显示 "12345"（应该显示）
+5. 对每个厂商进行保存操作
+6. 再次切换验证保存后的 key 是否正确显示
+
+【版本信息】
+--------------------------------------------------------------------------------
+- 前端版本号: v=3.3.0-state-driven
+- 发布日期: 2026年3月1日
+- 修复类型: 前端配置管理架构重构
+
+【备注】
+--------------------------------------------------------------------------------
+- 本次修复为纯前端改动，无需后端配合
+- 状态缓存存储在内存中，刷新页面后会重置
+- 真正持久化需要用户点击"保存并应用"按钮
+
+================================================================================
+                                  报告结束
+================================================================================

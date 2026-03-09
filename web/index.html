@@ -104,7 +104,12 @@
                             <!-- API Key -->
                             <div>
                                 <label class="text-cyan-400 text-xs font-bold block mb-2">API Key</label>
-                                <input type="password" id="llmApiKey" class="w-full bg-slate-800 border border-slate-600 rounded p-2 text-sm text-white focus:border-cyan-500 focus:outline-none" placeholder="sk-..." onblur="onApiKeyChanged()">
+                                <div class="relative">
+                                    <input type="text" id="llmApiKey" autocomplete="new-password" style="-webkit-text-security: disc;" class="w-full bg-slate-800 border border-slate-600 rounded p-2 pr-10 text-sm text-white focus:border-cyan-500 focus:outline-none" placeholder="sk-..." onblur="onApiKeyChanged()">
+                                    <button type="button" onclick="togglePasswordVisibility('llmApiKey', 'llmEyeIcon')" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-400">
+                                        <i id="llmEyeIcon" class="fa-solid fa-eye"></i>
+                                    </button>
+                                </div>
                             </div>
 
                             <!-- Base URL -->
@@ -205,7 +210,12 @@
                             <!-- API Key -->
                             <div>
                                 <label class="text-cyan-400 text-xs font-bold block mb-2">API Key</label>
-                                <input type="password" id="imageApiKey" class="w-full bg-slate-800 border border-slate-600 rounded p-2 text-sm text-white focus:border-cyan-500 focus:outline-none" placeholder="sk-...">
+                                <div class="relative">
+                                    <input type="text" id="imageApiKey" autocomplete="new-password" style="-webkit-text-security: disc;" class="w-full bg-slate-800 border border-slate-600 rounded p-2 pr-10 text-sm text-white focus:border-cyan-500 focus:outline-none" placeholder="sk-...">
+                                    <button type="button" onclick="togglePasswordVisibility('imageApiKey', 'imageEyeIcon')" class="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-cyan-400">
+                                        <i id="imageEyeIcon" class="fa-solid fa-eye"></i>
+                                    </button>
+                                </div>
                             </div>
 
                             <!-- 模型名称 -->
@@ -611,7 +621,7 @@
     <script src="js/chat.js?v=3.0.3"></script>
     <script src="js/report.js?v=3.0.3"></script>
     <script src="js/index_manager.js?v=3.0.3"></script>
-    <script src="js/llm_config.js?v=3.1.0-race-fix"></script>
-    <script src="js/image_config.js?v=3.0.3"></script>
+    <script src="js/llm_config.js?v=3.3.4-fix-syntax"></script>
+    <script src="js/image_config.js?v=3.3.4-fix-syntax"></script>
 </body>
 </html>

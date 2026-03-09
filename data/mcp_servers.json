@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "name": "filesystem",
+      "enabled": true,
+      "description": "文件系统访问 MCP 服务器",
+      "command": "node",
+      "args": [
+        "node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
+        "data"
+      ]
+    }
+  ],
+  "config": {
+    "auto_start": true,
+    "timeout": 30,
+    "retry_count": 3
+  }
+}

@@ -1,9 +1,11 @@
-/**
- * LLM 配置管理 - 最终完美版 (v3.1.0)
- * 特性：无锁架构 + 竞态条件防御 (Race Condition Protection)
- */
+// ==========================================
+// 1. 全局状态缓存 ( 充当本地微型数据库 )
+// ==========================================
+const llmStateCache = {};
 
-// 1. 厂商预设
+// ==========================================
+// 2. 厂商预设
+// ==========================================
 const PROVIDER_PRESETS = {
     deepseek: { base_url: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-coder', 'deepseek-reasoner'] },
     openai: { base_url: 'https://api.openai.com/v1', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'] },
@@ -14,151 +16,216 @@ const PROVIDER_PRESETS = {
     custom: { base_url: '', models: [] }
 };
 
-// 2. 初始化
-async function initLLMConfig() {
-    console.log('🚀 [Init] 系统初始化...');
-    try {
-        // 获取当前激活的配置
-        const response = await fetch('/api/v1/config/llm');
-        const config = await response.json();
-        console.log('📦 [Init] 当前激活配置:', config);
+// ==========================================
+// 3. 实时监听输入 ( 敲击键盘瞬间保存到缓存 )
+// ==========================================
+let llmFetchModelsTimeout = null;
 
-        // 1. 设置开关状态
-        document.getElementById('llmEnabled').checked = config.is_enabled;
-        toggleLLMFields();
+function setupLLMInputListeners() {
+    const inputMapping = {
+        'llmApiKey': 'apiKey',
+        'llmBaseUrl': 'baseUrl',
+        'llmModelName': 'modelName',
+        'llmTemperature': 'temperature',
+        'llmApiVersion': 'apiVersion'
+    };
 
-        // 2. 设置下拉框选中项
-        const provider = config.provider || 'deepseek';
-        document.getElementById('llmProvider').value = provider;
+    Object.keys(inputMapping).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('input', (e) => {
+                const provider = document.getElementById('llmProvider').value;
+                // 如果缓存不存在则初始化
+                if (!llmStateCache[provider]) {
+                    llmStateCache[provider] = {};
+                }
+                // 将当前输入值实时存入对应的缓存字段
+                const cacheKey = inputMapping[id];
+                llmStateCache[provider][cacheKey] = e.target.value;
 
-        // 3. 填充字段 (直接使用 /api/v1/config/llm 返回的最新数据)
-        if (config.base_url) document.getElementById('llmBaseUrl').value = config.base_url;
-        if (config.model_name) document.getElementById('llmModelName').value = config.model_name;
-        if (config.temperature) {
-            document.getElementById('llmTemperature').value = config.temperature;
-            const tempValue = document.getElementById('tempValue');
-            if (tempValue) tempValue.innerText = config.temperature;
+                // API Key 输入后自动加载模型（防抖处理）
+                if (id === 'llmApiKey' && typeof fetchModels === 'function') {
+                    clearTimeout(llmFetchModelsTimeout);
+                    llmFetchModelsTimeout = setTimeout(() => {
+                        fetchModels();
+                    }, 800);
+                }
+            });
         }
+    });
+}
 
-        // 关键：初始化时回填 Key
-        if (config.api_key) {
-            document.getElementById('llmApiKey').value = config.api_key;
-            console.log('🔑 [Init] API Key 已回填 (长度:', config.api_key.length, ')');
+// ==========================================
+// 4. 统一渲染 UI ( 严格根据缓存重绘界面 )
+// ==========================================
+function renderLLMForm(provider) {
+    const state = llmStateCache[provider] || {};
+    const preset = PROVIDER_PRESETS[provider] || {};
+    
+    // 渲染 Key 和 BaseUrl
+    document.getElementById('llmApiKey').value = state.apiKey || '';
+    document.getElementById('llmBaseUrl').value = state.baseUrl || preset.base_url || '';
+    
+    // 渲染模型下拉框
+    const modelSelect = document.getElementById('llmModelName');
+    if (state.modelName) {
+        // 如果当前下拉列表没有这个模型，临时加进去防止显示空白
+        if (!Array.from(modelSelect.options).some(opt => opt.value === state.modelName)) {
+            modelSelect.add(new Option(state.modelName, state.modelName));
         }
-
-        // 4. 处理 Azure 界面显隐
-        updateUIForAzure(provider);
-
-    } catch (error) {
-        console.error('❌ [Init] 初始化失败:', error);
+        modelSelect.value = state.modelName;
+    }
+    
+    // 渲染 Temperature
+    if (state.temperature !== undefined) {
+        document.getElementById('llmTemperature').value = state.temperature;
+        const tempValue = document.getElementById('tempValue');
+        if (tempValue) tempValue.innerText = state.temperature;
+    }
+    
+    // 渲染 Azure 专属字段
+    const apiVersionEl = document.getElementById('llmApiVersion');
+    if (apiVersionEl && state.apiVersion !== undefined) {
+        apiVersionEl.value = state.apiVersion;
     }
 }
 
-// 3. 核心：切换服务商 (onChange 事件)
-async function updateProviderPresets() {
-    const provider = document.getElementById('llmProvider').value;
-    console.log(`🔄 [Switch] ========== 切换至服务商: ${provider} ==========`);
-
-    // A. 界面调整
-    updateUIForAzure(provider);
-
-    // B. 预填 Base URL
-    const preset = PROVIDER_PRESETS[provider];
-    if (preset && preset.base_url) {
-        document.getElementById('llmBaseUrl').value = preset.base_url;
-        console.log(`[Switch] 已填充 Base URL: ${preset.base_url}`);
-    } else {
-        document.getElementById('llmBaseUrl').value = '';
-    }
-
-    // C. 视觉上先清空 Key，避免误导用户
-    document.getElementById('llmApiKey').value = '';
-    console.log(`[Switch] 已清空 API Key 输入框（准备加载）`);
-
-    // D. 发起异步请求获取该厂商的 Key
-    // 注意：这里没有任何锁，必须去请求
-    await loadProviderConfig(provider);
-
-    // E. 刷新模型列表
-    fetchModels();
-}
-
-// 4. 核心：安全加载配置 (含竞态检查)
-async function loadProviderConfig(provider) {
-    // 【关键】记录发起请求时的目标，用于验证
-    const targetProvider = provider;
-
+// ==========================================
+// 5. 从后端安全拉取配置 ( 仅在缓存为空时调用 )
+// ==========================================
+async function fetchProviderConfigFromDB(provider) {
     try {
-        console.log(`📡 [Fetch] 正在请求 ${provider} 的配置...`);
-        // 加时间戳防止浏览器缓存
         const url = `/api/v1/config/llm/provider/${provider}?_t=${Date.now()}`;
         const res = await fetch(url);
         const data = await res.json();
 
-        // 🛡️【竞态条件防御】
-        // 检查：请求回来时，用户选的还是我请求的那个厂商吗？
-        const currentSelection = document.getElementById('llmProvider').value;
-        if (currentSelection !== targetProvider) {
-            console.warn(`🛑 [Race] 请求已过期。界面当前是 ${currentSelection}，但返回的是 ${targetProvider}。已丢弃数据。`);
-            return; // ⛔ 直接退出，不更新界面，防止数据错乱
-        }
+        const preset = PROVIDER_PRESETS[provider] || {};
 
-        // 如果一致，才安全地更新界面
         if (data.status === 'success' && data.config) {
-            const conf = data.config;
-            console.log(`✅ [Load] 配置加载成功:`, conf);
+            // 如果后端返回了掩码形式的 key，则视为空，要求用户重新输入
+            let safeKey = data.config.api_key || '';
+            if (safeKey.includes('****')) safeKey = '';
 
-            // 只有当服务器有 Key 时才填入，否则保持为空（等待用户填）
-            if (conf.api_key) {
-                document.getElementById('llmApiKey').value = conf.api_key;
-                console.log(`[UI] ✓ API Key 已填入 (长度: ${conf.api_key.length})`);
-            } else {
-                console.log(`[UI] ⚠️ 该厂商暂无 API Key`);
-            }
-
-            // 恢复其他字段
-            if (conf.base_url) document.getElementById('llmBaseUrl').value = conf.base_url;
-            if (conf.model_name) document.getElementById('llmModelName').value = conf.model_name;
-            if (conf.temperature !== undefined) {
-                document.getElementById('llmTemperature').value = conf.temperature;
-                const tempValue = document.getElementById('tempValue');
-                if (tempValue) tempValue.innerText = conf.temperature;
-            }
-            if (conf.api_version) document.getElementById('llmApiVersion').value = conf.api_version;
-
-            console.log(`[UI] ✓ 已加载 ${provider} 的完整配置`);
+            llmStateCache[provider] = {
+                apiKey: safeKey,
+                baseUrl: data.config.base_url || preset.base_url || '',
+                modelName: data.config.model_name || '',
+                temperature: data.config.temperature !== undefined ? data.config.temperature : 0.3,
+                apiVersion: data.config.api_version || ''
+            };
         } else {
-            console.log(`ℹ️ [Load] ${provider} 暂无历史配置`);
+            // 后端没有该厂商记录，初始化基础缓存
+            llmStateCache[provider] = {
+                apiKey: '',
+                baseUrl: preset.base_url || '',
+                temperature: 0.3
+            };
         }
     } catch (e) {
-        console.error(`❌ [Fetch] 请求出错:`, e);
-        alert("加载配置失败，请检查网络连接或后端服务");
+        console.error("从数据库加载配置失败", e);
+        llmStateCache[provider] = { apiKey: '', baseUrl: PROVIDER_PRESETS[provider]?.base_url || '' };
     }
 }
 
-// 5. 保存配置
+// ==========================================
+// 6. 核心逻辑：切换厂商 ( 解决数据消失的根源 )
+// ==========================================
+async function updateProviderPresets() {
+    const provider = document.getElementById('llmProvider').value;
+    
+    // 切换 Azure 专属 UI 显示
+    if (typeof updateUIForAzure === 'function') {
+        updateUIForAzure(provider);
+    }
+
+    // 关键防御：如果本地缓存中【没有】这个厂商的数据，才去后端拉取
+    // 这样就不会覆盖用户刚输入了一半还没保存的数据
+    if (!llmStateCache[provider]) {
+        const apiKeyInput = document.getElementById('llmApiKey');
+        apiKeyInput.value = '';
+        apiKeyInput.placeholder = '正在从服务器同步配置...';
+        
+        // 等待数据拉取完成
+        await fetchProviderConfigFromDB(provider); 
+        
+        apiKeyInput.placeholder = '请输入 API Key';
+    }
+
+    // 根据缓存重绘界面
+    renderLLMForm(provider);
+
+    // 数据就绪后，再去拉取可用模型
+    if (typeof fetchModels === 'function') {
+        fetchModels();
+    }
+}
+
+// ==========================================
+// 7. 初始化逻辑重构
+// ==========================================
+async function initLLMConfig() {
+    // 启动全局键盘监听
+    setupLLMInputListeners(); 
+    
+    try {
+        const response = await fetch('/api/v1/config/llm');
+        const config = await response.json();
+        
+        document.getElementById('llmEnabled').checked = config.is_enabled;
+        if (typeof toggleLLMFields === 'function') toggleLLMFields();
+
+        const provider = config.provider || 'deepseek';
+        document.getElementById('llmProvider').value = provider;
+        if (typeof updateUIForAzure === 'function') updateUIForAzure(provider);
+        
+        // 处理后端的脱敏 Key
+        let safeKey = config.api_key || '';
+        if (safeKey.includes('****')) safeKey = '';
+
+        // 把激活的配置塞入缓存
+        llmStateCache[provider] = {
+            apiKey: safeKey,
+            baseUrl: config.base_url || '',
+            modelName: config.model_name || '',
+            temperature: config.temperature !== undefined ? config.temperature : 0.3,
+            apiVersion: config.api_version || ''
+        };
+        
+        // 渲染界面
+        renderLLMForm(provider);
+
+    } catch (error) {
+        console.error('初始化配置失败', error);
+    }
+}
+
+// ==========================================
+// 8. 保存配置
+// ==========================================
 async function saveLLMConfig() {
+    const provider = document.getElementById('llmProvider').value;
+    const apiKey = document.getElementById('llmApiKey').value.trim();
+    const isEnabled = document.getElementById('llmEnabled').checked;
+
+    if (isEnabled && !apiKey) {
+        alert("⚠️ API Key 不能为空！");
+        return;
+    }
+
+    if (apiKey && apiKey.length < 10) {
+        alert("⚠️ API Key 格式不正确");
+        return;
+    }
+
     const config = {
-        provider: document.getElementById('llmProvider').value,
-        api_key: document.getElementById('llmApiKey').value.trim(),
+        provider: provider,
+        api_key: apiKey,
         base_url: document.getElementById('llmBaseUrl').value.trim(),
         model_name: getModelName(),
         temperature: parseFloat(document.getElementById('llmTemperature').value),
-        is_enabled: document.getElementById('llmEnabled').checked,
+        is_enabled: isEnabled,
         api_version: document.getElementById('llmApiVersion')?.value || ''
     };
-
-    console.log('💾 [Save] 正在保存配置:', {
-        provider: config.provider,
-        has_key: !!config.api_key,
-        key_length: config.api_key?.length || 0,
-        is_enabled: config.is_enabled
-    });
-
-    if (config.is_enabled && !config.api_key) {
-        alert("⚠️ 启用自定义配置时，API Key 不能为空！");
-        return;
-    }
 
     try {
         const res = await fetch('/api/v1/config/llm', {
@@ -169,31 +236,28 @@ async function saveLLMConfig() {
 
         if (res.ok) {
             alert("✅ 配置已保存并应用！");
-            // 触发热重载
             await fetch('/api/v1/config/llm/reload', { method: 'POST' });
         } else {
-            alert("❌ 保存失败，请检查后端日志");
+            alert("❌ 保存失败");
         }
     } catch (e) {
         alert("❌ 网络请求错误: " + e.message);
     }
 }
 
-// 6. 获取模型列表
+// ==========================================
+// 9. 获取模型列表
+// ==========================================
 async function fetchModels() {
     const provider = document.getElementById('llmProvider').value;
     const apiKey = document.getElementById('llmApiKey').value;
     const baseUrl = document.getElementById('llmBaseUrl').value;
     const select = document.getElementById('llmModelName');
 
-    console.log(`[Models] 获取模型列表: ${provider}`);
-
-    // 如果没 Key，优先展示预设，不发请求
     if (!apiKey) {
         const presets = PROVIDER_PRESETS[provider]?.models || [];
         if (presets.length > 0) {
             select.innerHTML = presets.map(m => `<option value="${m}">${m}</option>`).join('');
-            console.log(`[Models] 使用预设模型列表:`, presets);
             return;
         }
     }
@@ -206,24 +270,23 @@ async function fetchModels() {
         if (data.status === 'success' && data.models?.length > 0) {
             select.innerHTML = data.models.map(m => `<option value="${m}">${m}</option>`).join('');
             select.value = data.models[0];
-            console.log(`[Models] ✓ 获取到 ${data.models.length} 个模型`);
         } else {
-            // 回退到预设
             const presets = PROVIDER_PRESETS[provider]?.models || ['deepseek-chat'];
             select.innerHTML = presets.map(m => `<option value="${m}">${m}</option>`).join('');
-            console.log(`[Models] ⚠️ API 失败，使用预设列表`);
         }
     } catch (e) {
-        console.warn('[Models] 获取失败，使用默认值:', e);
         select.innerHTML = '<option value="deepseek-chat">deepseek-chat (默认)</option>';
     }
 }
 
-// 7. 辅助函数
+// ==========================================
+// 10. 辅助函数
+// ==========================================
 function toggleLLMFields() {
     const enabled = document.getElementById('llmEnabled').checked;
-    document.getElementById('llmConfigForm').classList.toggle('hidden', !enabled);
-    console.log(`[UI] LLM 配置表单:`, enabled ? '显示' : '隐藏');
+    const form = document.getElementById('llmConfigForm');
+    console.log('[toggleLLMFields] enabled:', enabled, 'form element:', !!form);
+    form.classList.toggle('hidden', !enabled);
 }
 
 function updateUIForAzure(provider) {
@@ -243,7 +306,6 @@ function getModelName() {
 }
 
 function testLLMConnection() {
-    console.log('[Test] 连接测试已简化，请直接点击保存测试');
     alert("请直接点击【保存并应用】来验证连通性。");
 }
 
@@ -262,15 +324,45 @@ function onApiKeyChanged() {
     const apiKey = document.getElementById('llmApiKey').value;
     const provider = document.getElementById('llmProvider').value;
 
-    // 如果输入了API Key，自动获取模型列表
     if (apiKey && apiKey.length > 10 && provider !== 'zhipu') {
-        console.log('[Key] 检测到 API Key 输入，自动获取模型列表...');
         fetchModels();
     }
 }
 
+function togglePasswordVisibility(inputId, iconId) {
+    const input = document.getElementById(inputId);
+    const icon = document.getElementById(iconId);
+    
+    // 切换 -webkit-text-security 样式来显示/隐藏密码
+    if (input.style.webkitTextSecurity === 'none') {
+        input.style.webkitTextSecurity = 'disc';
+        icon.className = 'fa-solid fa-eye';
+    } else {
+        input.style.webkitTextSecurity = 'disc';
+        icon.className = 'fa-solid fa-eye';
+    }
+}
+
+// ==========================================
 // 启动
+// ==========================================
+// 启动
+// ==========================================
 document.addEventListener('DOMContentLoaded', () => {
     console.log('[Init] DOM 加载完成，开始初始化 LLM 配置');
-    initLLMConfig();
+    initLLMConfig().then(() => {
+        console.log('[Init] LLM 配置初始化完成');
+    }).catch(err => {
+        console.error('[Init] LLM 配置初始化失败:', err);
+    });
 });
+
+// 暴露全局函数
+window.toggleLLMFields = toggleLLMFields;
+window.onApiKeyChanged = onApiKeyChanged;
+window.updateProviderPresets = updateProviderPresets;
+window.saveLLMConfig = saveLLMConfig;
+window.fetchModels = fetchModels;
+window.testLLMConnection = testLLMConnection;
+window.resetLLMConfig = resetLLMConfig;
+window.togglePasswordVisibility = togglePasswordVisibility;

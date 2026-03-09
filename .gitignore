@@ -14,6 +14,9 @@
 UsersZhuanZnpm-cache/
 **/*npm-cache/
 
+# 忽略 Node.js 依赖文件夹
+node_modules/
+
 # 忽略 Python 编译产生的垃圾文件
 __pycache__/
 *.py[cod]
@@ -128,6 +131,7 @@ htmlcov/
 
 # 忽略项目特定的开发文档和进展报告
 进度记录/                    # 项目进度记录（可能包含敏感实现细节）
+进度报告/                    # ⚠️ 重要：此文件夹内容需同步到项目规则，与AGENTS.md同等重要
 
 # 临时测试文件（使用多种格式确保被忽略）
 测试文件_无用文件
@@ -189,6 +193,20 @@ nul
 接口规范/硅基流动api接口规范.md
 =0.8.11
 .claudetest_records.md
+
+# 忽略启动脚本
+启动服务.bat
+
+# 忽略 npm 相关文件
+package.json
+package-lock.json
+UsersZhuanZnpm-cache/
+
+# 忽略日志文件
+server.log
+server_test.log
 tmpclaude*
 **/.claude/
 **/.claude/**
+AGENTS.md
+AGENTS.md

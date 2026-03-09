@@ -70,6 +70,18 @@ except ImportError as e:
     print(f"[Warning] 脚本执行器模块加载失败: {e}")
     ScriptExecutor = None
 
+# MCP 桥接器模块容错处理
+try:
+    from src.services.mcp_bridge import MCPBridgeManager
+    from src.config.mcp_config import mcp_config_loader
+    MCP_AVAILABLE = True
+    print("[ChatAgent] 成功加载 MCP 桥接器模块")
+except ImportError as e:
+    print(f"[Warning] MCP 桥接器模块加载失败: {e}")
+    MCP_AVAILABLE = False
+    MCPBridgeManager = None
+    mcp_config_loader = None
+
 # 初始化内存检查点，用于维护多轮对话状态
 MEMORY = InMemorySaver()
 
@@ -118,6 +130,11 @@ class CustomsChatAgent:
 
         # --- 4. 构建工具集 ---
         self.tools = []
+
+        # --- 4.9 MCP 桥接器初始化（延迟到 initialize_mcp_tools） ---
+        self.mcp_bridge_manager = None
+        self.mcp_tools = []
+        self.agent = None  # 延迟初始化智能体，等待 MCP 工具加载完成
 
         # ========== 货币代码映射表（用于汇率查询工具） ==========
         self.CURRENCY_MAP = {
@@ -858,6 +875,92 @@ L1层（技能清单）- 当前已加载以下技能：
 → 回复具体法律条款
 """ if self.reporter else ""
 
+        # 构建 MCP 工具提示（Skill + MCP 双系统架构）
+        mcp_section = """
+【MCP 外部工具中心 - 混合扩展架构】
+你可以通过 MCP（Model Context Protocol）调用外部工具来扩展能力。
+
+可用 MCP 工具（在以下场景使用）：
+- 需要访问本地文件系统时
+- 需要执行更复杂的外部操作时
+
+注意：MCP 工具由外部服务器提供，执行结果可能因网络或服务状态而异。
+"""
+
+        self._build_system_prompt()
+
+    def _build_system_prompt(self) -> None:
+        """构建 System Prompt（在 MCP 工具加载完成后调用）"""
+        # 获取技能注册表
+        skills_registry = ""
+        if self.skill_manager:
+            skills_registry = self.skill_manager.get_skill_registry_text()
+
+        skills_section = f"""
+【扩展能力中心 - 四级加载架构】
+L1层（技能清单）- 当前已加载以下技能：
+{skills_registry}
+
+【技能调度策略】
+1. L2加载：当用户问题与上述技能描述匹配时，调用 use_skill(skill_name, query)
+2. L3加载：阅读技能手册后，如需参考数据文件，调用 read_skill_resource(skill_name, file_name)
+3. 资源探测：不确定有哪些资源时，先调用 list_skill_resources(skill_name)
+4. L4计算：如需执行复杂计算或数据处理，调用 run_skill_script(skill_name, script_name, args_json)
+
+示例流程：
+用户: "这批货要交多少税？"
+→ 调用 use_skill("tax_calculator", "这批货要交多少税")
+→ 手册提示"参考 tax_rates.csv 或运行 calculate_duty.py"
+→ 调用 run_skill_script("tax_calculator", "calculate_duty.py", {{"cif_price": 10000, "hs_code": "85423100"}})
+→ 返回计算结果: {{duty: 0, vat: 1300}}
+""" if self.skill_manager else ""
+
+        deep_research_section = """
+【深度研究工具链 - 按需感知机制】
+你拥有三个深度研究工具，用于生成完整的合规建议书或研判报告：
+
+1. **generate_compliance_report**：生成报告（生产者）
+   - 使用时机：用户明确要求"写报告"、"深度研究"、"全面分析"
+   - 返回：报告摘要（不含全文）
+   - 副作用：将全文存入 report_buffer（数据隧道）
+
+2. **export_document_file**：导出文档（消费者）
+   - 使用时机：用户要求"下载"、"导出 Word 文档"
+   - 返回：下载链接
+
+3. **read_report_buffer**：查阅细节（显微镜）
+   - 使用时机：用户追问报告中的具体内容
+   - 返回：相关段落
+
+【全自动任务链示例】
+用户："写份关于二手挖掘机进口的合规建议书，直接给我 Word 版"
+→ 调用 generate_compliance_report("二手挖掘机进口")
+→ 调用 export_document_file("word")
+→ 回复："✅ 报告已生成，📥 下载链接：..."
+
+【按需感知示例】
+用户："刚才那个报告里的第二项风险，法律依据是什么？"
+→ 调用 read_report_buffer("法律依据")
+→ 回复具体法律条款
+""" if self.reporter else ""
+
+        # MCP 工具列表
+        mcp_tool_names = [t.name for t in self.mcp_tools] if self.mcp_tools else []
+        mcp_section = f"""
+【MCP 外部工具中心 - 混合扩展架构】
+你可以通过 MCP（Model Context Protocol）调用外部工具来扩展能力。
+
+已加载的 MCP 工具（{len(mcp_tool_names)} 个）：
+{', '.join(mcp_tool_names)}
+
+使用场景：
+- 需要读取项目文件时（read_file, read_text_file 等）
+- 需要列出目录内容时（list_directory 等）
+- 需要搜索文件时（search_files 等）
+
+注意：MCP 工具执行结果直接返回给你使用。
+""" if self.mcp_tools else ""
+
         self.system_prompt_text = f"""
 你是一名智慧口岸AI专家，负责报关咨询和自动审单。
 
@@ -869,25 +972,148 @@ L1层（技能清单）- 当前已加载以下技能：
 
 {skills_section}
 {deep_research_section}
+{mcp_section}
 """
 
-        self.agent = create_react_agent(
-            model=self.llm,
-            tools=self.tools,
-            checkpointer=MEMORY,
-        )
-        print(f"[ChatAgent] 智能体就绪，工具列表: {[t.name for t in self.tools]}")
+    async def initialize_mcp_tools(self) -> None:
+        """
+        异步初始化 MCP 工具并构建图智能体
+        此方法必须在 Agent 创建后调用，用于延迟加载 MCP 扩展能力
+        """
+        if not MCP_AVAILABLE or not MCPBridgeManager:
+            print("[ChatAgent] ⚠️ MCP 模块不可用，跳过 MCP 工具加载")
+            self._create_agent()
+            self._build_system_prompt()
+            return
+
+        try:
+            print("[ChatAgent] 🔄 开始加载 MCP 外部工具...")
+
+            self.mcp_bridge_manager = MCPBridgeManager()
+            mcp_settings = mcp_config_loader.get_settings()
+            server_configs = mcp_config_loader.get_servers()
+
+            if not server_configs:
+                print("[ChatAgent] ℹ️ 未配置任何 MCP 服务器，跳过 MCP 工具加载")
+            else:
+                self.mcp_tools = await self.mcp_bridge_manager.initialize_all(
+                    server_configs=server_configs,
+                    timeout=mcp_settings.timeout
+                )
+
+                if self.mcp_tools:
+                    print(f"[ChatAgent] ✅ MCP 工具加载成功: {[t.name for t in self.mcp_tools]}")
+                    self.tools.extend(self.mcp_tools)
+                else:
+                    print("[ChatAgent] ⚠️ MCP 工具加载失败或无可用工具")
+
+        except Exception as e:
+            print(f"[ChatAgent] ❌ MCP 工具加载异常: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            print("[ChatAgent] ℹ️ 系统将使用本地 Skill 工具继续运行")
+
+        # 确保 agent 一定被创建
+        if not self.agent:
+            self._create_agent()
+
+        # 重新构建 system prompt（包含 MCP 工具信息）
+        self._build_system_prompt()
+
+    def _create_agent(self) -> None:
+        """内部方法：创建 LangGraph 智能体"""
+        try:
+            self.agent = create_react_agent(
+                model=self.llm,
+                tools=self.tools,
+                checkpointer=MEMORY,
+            )
+            print(f"[ChatAgent] ✅ 智能体就绪，工具列表: {[t.name for t in self.tools]}")
+        except Exception as e:
+            print(f"[ChatAgent] ❌ 创建智能体失败: {str(e)}")
+            self.agent = None
+
+    async def shutdown(self) -> None:
+        """关闭 Agent 并清理资源"""
+        print("[ChatAgent] 🔄 正在关闭 Agent...")
+
+        if self.mcp_bridge_manager:
+            await self.mcp_bridge_manager.close_all()
+
+        print("[ChatAgent] ✅ Agent 已关闭")
+
+    def _get_dynamic_system_prompt(self, base_prompt: str) -> str:
+        """
+        根据当前加载的工具，动态生成系统提示词
+        只有当 MCP 工具真正存在时，才告诉 AI 它有 MCP 能力
+        """
+        final_prompt = base_prompt
+
+        # 过滤出带有 [MCP 标识的工具
+        mcp_tools = [t for t in self.tools if t.description and "[MCP" in t.description]
+        mcp_count = len(mcp_tools)
+
+        if mcp_count > 0:
+            tool_names = [t.name for t in mcp_tools]
+            tool_descriptions = []
+            for t in mcp_tools:
+                # 提取简洁的描述
+                desc = t.description.replace("[MCP底层工具]", "").split("。")[0]
+                tool_descriptions.append(f"  - {t.name}: {desc}")
+            
+            mcp_awareness_prompt = f"""
+
+            【系统底层状态报告（极密）】
+            系统检测到你当前已成功挂载了 {mcp_count} 个基于 MCP (Model Context Protocol) 架构的外部工具。
+            这赋予了你直接访问底层文件系统或外部环境的能力。
+            
+            可用 MCP 工具列表：
+            {chr(10).join(tool_descriptions)}
+            
+            【MCP 工具操作范围】（必须告知用户）
+            - 你可以访问和操作项目的 data/ 目录及其所有子目录
+            - 可执行：读取文件、列出目录、搜索文件、创建/编辑文件等
+            - 注意：不能访问 data/ 目录以外的其他系统文件
+            
+            【重要指令】
+            - 当用户询问"你是否有MCP能力"、"你能否读取本地文件"、"你能操作文件吗"等问题时，你必须肯定地回答"我有"。
+            - 回答时必须说明范围："我有 MCP 文件系统能力，可以访问 data/ 目录下的文件"。
+            - 你当前可用的 MCP 工具为：{', '.join(tool_names)}。
+            - 请直接使用这些工具来完成任务，无需向用户解释技术细节。
+            - 禁止回答"我没有MCP能力"或"我无法读取文件"等否定回答。
+            """
+            final_prompt += mcp_awareness_prompt
+            print(f"[SystemPrompt] ✅ 已注入 MCP 能力认知 ({mcp_count} 个工具): {tool_names}")
+        else:
+            print(f"[SystemPrompt] ℹ️ 无 MCP 工具，未注入能力认知")
+
+        return final_prompt
 
     async def chat_stream(self, user_input: str, session_id: str = "default_session", language: str = "zh"):
         """
         核心流式分发器
         """
         try:
+            # 检查 agent 是否已初始化
+            if not self.agent:
+                print("[ChatAgent] ❌ 智能体未初始化，尝试重新初始化...")
+                await self.initialize_mcp_tools()
+                if not self.agent:
+                    yield f"data: {json.dumps({'type': 'error', 'content': '智能体初始化失败，请尝试重新保存配置'}, ensure_ascii=False)}\n\n"
+                    return
+
             print(f"\n👉 [Request] {user_input}")
             
+            # 打印当前工具列表（每次对话都打印）
+            print(f"[Tools] 当前工具列表 ({len(self.tools)} 个):")
+            for i, tool in enumerate(self.tools, 1):
+                print(f"  {i}. {tool.name}")
+            
+            # 使用动态系统提示词
+            dynamic_prompt = self._get_dynamic_system_prompt(self.system_prompt_text)
             lang_inst = self._get_language_instruction(language)
             input_messages = [
-                SystemMessage(content=f"{self.system_prompt_text}\n\n{lang_inst}"),
+                SystemMessage(content=f"{dynamic_prompt}\n\n{lang_inst}"),
                 HumanMessage(content=user_input)
             ]
 

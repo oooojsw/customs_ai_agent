@@ -53,3 +53,6 @@ huggingface-hub>=0.20.0       # HuggingFace模型下载
 
 # --- Word 文档导出（功能三：深度研究工具） ---
 python-docx>=0.8.11           # Word 文档生成
+
+# --- MCP 客户端 SDK (Skill + MCP 双系统架构) ---
+mcp>=1.0.0                    # Model Context Protocol 客户端

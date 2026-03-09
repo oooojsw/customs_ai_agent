@@ -1,0 +1,121 @@
+# Skill + MCP 双系统架构升级报告
+
+## 日期
+2026年3月6日
+
+## 任务概述
+将现有的"本地 Skill 系统"升级为"Skill + MCP 双系统并存"架构，参考 MCP 通信协议标准化智能体与外部工具通信的核心理念。
+
+## 完成的工作
+
+### 1. 依赖安装
+- 安装 `mcp>=1.0.0` 包（通过代理）
+- 安装 `torch` 包（解决 sentence-transformers 依赖问题）
+
+### 2. 新增文件
+
+#### 2.1 MCP 配置文件
+- **文件**: `data/mcp_servers.json`
+- **内容**: 配置了文件系统 MCP 服务器（npx @modelcontextprotocol/server-filesystem）
+
+#### 2.2 MCP 配置模块
+- **文件**: `src/config/mcp_config.py`
+- **功能**: 
+  - MCPServerConfig 模型（MCP 服务器配置）
+  - MCPConfigSettings 模型（全局配置）
+  - MCPConfigLoader 类（配置加载器，单例模式）
+
+#### 2.3 MCP 桥接器
+- **文件**: `src/services/mcp_bridge.py`
+- **功能**:
+  - MCPBridge 类：管理单个 MCP 服务器生命周期
+  - MCPBridgeManager 类：管理多个 MCP 服务器
+  - JSON Schema → Pydantic 动态转换
+  - 使用 AsyncExitStack 管理异步上下文（解决生命周期问题）
+
+### 3. 修改文件
+
+#### 3.1 requirements.txt
+- 新增 `mcp>=1.0.0` 依赖
+
+#### 3.2 src/services/chat_agent.py
+- 添加 MCP 模块导入（容错处理）
+- 添加 `self.mcp_bridge_manager` 和 `self.mcp_tools` 属性
+- 添加 `initialize_mcp_tools()` 异步方法（延迟加载 MCP 工具）
+- 添加 `_create_agent()` 内部方法（创建 LangGraph 智能体）
+- 添加 `shutdown()` 方法（清理 MCP 资源）
+- 添加 MCP 工具提示到 system_prompt
+- 移除同步创建 agent 的代码
+
+#### 3.3 src/main.py
+- 版本号更新为 `3.1.0 (Skill + MCP)`
+- CustomsChatAgent 初始化改为异步：
+  - 先创建实例
+  - 再调用 `await agent.initialize_mcp_tools()`
+- 添加服务关闭时的 MCP 资源清理逻辑
+
+## 测试结果
+
+### 启动日志
+```
+[ChatAgent] 🔄 开始加载 MCP 外部工具...
+[MCPBridgeManager] ➕ 已添加桥接器: filesystem
+[MCPBridge] 🔄 filesystem: 正在初始化...
+[MCPBridge] 📋 filesystem: 发现 14 个工具
+[MCPBridge] ✅ filesystem: 初始化完成，共 14 个工具
+[MCPBridgeManager] ✅ 全部 MCP 工具加载完毕，共 14 个
+[ChatAgent] ✅ MCP 工具加载成功
+[ChatAgent] ✅ 智能体就绪，工具列表: [23个工具]
+✅ [System] 对话引擎（Skill + MCP 双系统）就绪
+```
+
+### 工具列表（23个）
+**本地 Skill 工具（9个）**:
+1. audit_declaration
+2. search_customs_regulations
+3. use_skill
+4. read_skill_resource
+5. list_skill_resources
+6. run_skill_script
+7. generate_compliance_report
+8. export_document_file
+9. read_report_buffer
+
+**MCP 工具（14个）**:
+1. read_file
+2. read_text_file
+3. read_media_file
+4. read_multiple_files
+5. write_file
+6. edit_file
+7. create_directory
+8. list_directory
+9. list_directory_with_sizes
+10. directory_tree
+11. move_file
+12. search_files
+13. get_file_info
+14. list_allowed_directories
+
+## 架构设计要点
+
+### 1. 异步初始化
+- MCP 服务器启动必须是异步的，避免阻塞 FastAPI
+- 使用 `await agent.initialize_mcp_tools()` 延迟加载
+
+### 2. 生命周期管理
+- 使用 `AsyncExitStack` 解决异步上下文管理器的生命周期问题
+- 确保 MCP 连接在整个 Agent 生命周期内保持活跃
+
+### 3. 错误隔离
+- MCP 加载失败不影响本地 Skill 系统
+- 宽松模式：单个 MCP 服务器失败不影响其他服务器
+
+### 4. 沙盒安全
+- 文件系统 MCP 限定在 `./data` 目录内
+- 防止越权访问系统核心文件
+
+## 待扩展
+- 添加更多 MCP 服务器配置（如浏览器搜索 MCP）
+- 支持通过数据库动态配置 MCP 服务器
+- 添加 MCP 工具调用统计和监控
