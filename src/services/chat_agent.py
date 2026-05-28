@@ -136,6 +136,7 @@ class CustomsChatAgent:
         self.mcp_bridge_manager = None
         self.mcp_tools = []
         self.agent = None  # 延迟初始化智能体，等待 MCP 工具加载完成
+        self._opencode_context_by_session = {}
 
         # ========== 货币代码映射表（用于汇率查询工具） ==========
         self.CURRENCY_MAP = {
@@ -710,10 +711,54 @@ Never put the user request, script name, payload, or JSON arguments inside skill
             if not opencode_path:
                 return "Error: local opencode command was not found in PATH."
 
-            cmd = [opencode_path, "run", "--agent", agent_name, "--format", "json"]
+            output_dir = os.path.join(os.getcwd(), "data", "opencode_outputs")
+            os.makedirs(output_dir, exist_ok=True)
+            run_dir = os.path.join(os.getcwd(), "data", "opencode_runs")
+            os.makedirs(run_dir, exist_ok=True)
+            delegated_prompt = f"""
+EXECUTE THIS TASK NOW. Do not answer that you are ready. Do not ask what to do.
+
+TASK:
+{parsed_task}
+
+You are the local OpenCode child agent called by the customs AI parent process.
+This is a one-shot delegated execution, not an interactive chat.
+
+What you are:
+- You are a separate child coding agent with your own tools.
+- The parent customs AI will read your final answer and verify any artifact you create.
+- Do not speak as the parent customs AI.
+
+What you can do:
+- Inspect and edit files in this repository.
+- Run shell commands when needed.
+- Create small verification artifacts for the parent agent.
+
+What you need from the parent:
+- The concrete task.
+- Any relevant file paths, business context, and acceptance criteria.
+- If context is missing but the task is still safe and obvious, choose a reasonable default and proceed.
+
+Execution contract:
+- Your current working directory is inside this customs project: {run_dir}
+- Stay inside this customs project. Do not modify the OpenCode installation, global OpenCode config, or files outside this project.
+- The only project path you may write artifacts to is this output directory: {output_dir}
+- Do not modify .opencode/, AGENTS.md, AGENTS-opencode.md, start.bat, or source code unless the parent task explicitly asks for code changes.
+- Do not ask follow-up questions unless the task is impossible or unsafe.
+- If the task asks you to create, write, save, or produce any file, create a real file under the output directory above.
+- If the task is ambiguous but references creating a file, choose a useful small markdown file yourself and create it under the output directory above.
+- If the user says "随便" or "you decide", create {os.path.join(output_dir, "opencode_child_note.md")} with a short useful note proving the child agent wrote it.
+- Use your file writing tool or shell commands to create the file. Do not merely describe what you would do.
+- After creating a file, your final response must include exactly one line in this format:
+  OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>
+- Do not claim a file was created unless it exists on disk.
+- Keep the final answer concise.
+""".strip()
+
+            cmd = [opencode_path, "run", "--agent", agent_name, "--format", "json", "--dir", run_dir]
             if model:
                 cmd.extend(["--model", model])
-            cmd.append(parsed_task)
+            cmd.append(delegated_prompt)
 
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -759,9 +804,11 @@ Never put the user request, script name, payload, or JSON arguments inside skill
             func=lambda x: "This tool only supports async execution.",
             coroutine=delegate_to_opencode_tool,
             description=(
-                "Delegate a complex coding or filesystem task to the locally installed opencode CLI. "
-                "Input can be plain text or JSON like {\"task\":\"...\",\"agent\":\"build\"}. "
-                "Use this whenever the user explicitly asks to call opencode."
+                "Delegate a complex coding, repository, shell, or filesystem task to the locally "
+                "installed OpenCode child agent. Input can be plain text or JSON like "
+                "{\"task\":\"...\",\"agent\":\"build\"}. When a file artifact is requested, "
+                "OpenCode must write it under data/opencode_outputs/ and return "
+                "OPENCODE_ARTIFACT_PATH for parent verification."
             )
         ))
         self._delegate_to_opencode_tool = delegate_to_opencode_tool
@@ -1170,8 +1217,23 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
 
         opencode_section = """
 【本机 OpenCode 子智能体】
-当用户明确要求“调用 opencode”、“让 opencode 做”、“用本机 opencode 处理”，或需要把较大的代码/文件任务委托给外部成熟智能体时，必须调用 `delegate_to_opencode`。
-调用时传入任务本身，默认使用本机已验证可用的 `build` agent；不要把 opencode 当作 MCP server 调用。
+OpenCode 是一个独立的本机子智能体，不是你本人，也不是 MCP server。你是父智能体；OpenCode 是被你委托执行任务的外部编码/文件/命令行执行智能体。
+
+当用户明确要求“调用 opencode”、“让 opencode 做”、“用本机 opencode 处理”、“让子智能体做”，或需要把较大的代码/文件/脚本任务委托给外部成熟智能体时，必须调用 `delegate_to_opencode`。
+
+调用前你必须把以下信息组织进任务说明：
+1. 当前业务场景：这是智慧口岸/自动报关项目。
+2. 用户真正要 OpenCode 完成的动作，而不是你自己的解释。
+3. 可操作范围：当前项目仓库；如果要写文件，必须写到 `data/opencode_outputs/`。
+4. 验收标准：需要返回什么结果、文件路径、或命令输出。
+5. 禁止混淆身份：不要让 OpenCode 说“我就是主智能体”；它只能作为子智能体报告执行结果。
+6. 边界约束：OpenCode 只能服务当前自动报关项目，不能修改本机 OpenCode 安装、全局配置或项目外文件。
+
+调用后你必须区分两件事：
+- OpenCode 的回答只是子智能体执行结果。
+- 你作为父智能体要对结果做验证、总结，再回复用户。
+
+如果用户要求“让 opencode 创建/写入文件，然后你读取”，必须要求 OpenCode 创建真实文件，并在最终回复中返回 `OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>`。随后你必须读取该文件并把验证结果告诉用户。不能改成你自己用 MCP 写文件，也不能只口头说 OpenCode 做了。
 """
 
         self.system_prompt_text = f"""
@@ -1303,6 +1365,90 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
 
         return final_prompt
 
+    def _should_delegate_to_opencode(self, user_input: str, session_id: str) -> bool:
+        text = (user_input or "").strip()
+        lower_text = text.lower()
+        if "opencode" in lower_text:
+            return True
+
+        previous = self._opencode_context_by_session.get(session_id, "")
+        if not previous:
+            return False
+
+        follow_up_markers = [
+            "随便",
+            "你自己决定",
+            "继续",
+            "让他",
+            "子智能体",
+            "你不是opencode",
+            "不是opencode",
+            "它来做",
+            "他来做",
+            "读取",
+            "读一下",
+        ]
+        return len(text) <= 80 and any(marker in text for marker in follow_up_markers)
+
+    def _build_opencode_followup_task(self, user_input: str, session_id: str) -> str:
+        previous = self._opencode_context_by_session.get(session_id, "")
+        if previous and "opencode" not in (user_input or "").lower():
+            return (
+                "Continue the previous OpenCode delegation request.\n"
+                f"Previous request: {previous}\n"
+                f"Latest user follow-up: {user_input}\n"
+                "If the user asks you to decide, choose a useful small file artifact and create it."
+            )
+        return user_input
+
+    def _verify_opencode_artifact(self, opencode_result: str) -> str:
+        match = re.search(r"OPENCODE_ARTIFACT_PATH:\s*(.+)", opencode_result or "")
+        if not match:
+            return ""
+
+        rel_path = match.group(1).strip().strip('"').strip("'")
+        rel_path = rel_path.replace("\\", "/").lstrip("./")
+        project_root = os.path.abspath(os.getcwd())
+        data_root = os.path.abspath(os.path.join(project_root, "data"))
+        abs_path = os.path.abspath(os.path.join(project_root, rel_path))
+
+        if not (abs_path == data_root or abs_path.startswith(data_root + os.sep)):
+            return f"主智能体验证失败：opencode 返回的路径不在 data/ 目录内：{rel_path}"
+        if not os.path.exists(abs_path):
+            return f"主智能体验证失败：没有找到 opencode 返回的文件：{rel_path}"
+
+        size = os.path.getsize(abs_path)
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read(4000)
+            suffix = "\n...（内容较长，仅展示前 4000 字符）" if size > len(content.encode("utf-8", errors="ignore")) else ""
+            return (
+                f"主智能体已读取验证：{rel_path}（{size} bytes）\n\n"
+                f"文件内容：\n{content}{suffix}"
+            )
+        except UnicodeDecodeError:
+            return f"主智能体已验证文件存在：{rel_path}（{size} bytes，非 UTF-8 文本文件）"
+
+    def _expects_opencode_artifact(self, task: str) -> bool:
+        text = (task or "").lower()
+        markers = [
+            "文件",
+            "写入",
+            "创建",
+            "生成",
+            "保存",
+            "读取",
+            "file",
+            "artifact",
+            "read",
+            "write",
+            "create",
+            "generate",
+            "produce",
+            "save",
+        ]
+        return any(marker in text for marker in markers)
+
     async def chat_stream(self, user_input: str, session_id: str = "default_session", language: str = "zh"):
         """
         核心流式分发器
@@ -1323,9 +1469,21 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
             for i, tool in enumerate(self.tools, 1):
                 print(f"  {i}. {tool.name}")
 
-            if "opencode" in (user_input or "").lower():
+            if self._should_delegate_to_opencode(user_input, session_id):
                 yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': 'delegate_to_opencode', 'content': '正在调用本机 OpenCode 子智能体...'}, ensure_ascii=False)}\n\n"
-                result = await self._delegate_to_opencode_tool(user_input)
+                delegated_task = self._build_opencode_followup_task(user_input, session_id)
+                self._opencode_context_by_session[session_id] = delegated_task
+                result = await self._delegate_to_opencode_tool(delegated_task)
+                artifact_verification = self._verify_opencode_artifact(result)
+                if artifact_verification:
+                    result = f"{result}\n\n{artifact_verification}"
+                elif self._expects_opencode_artifact(delegated_task):
+                    result = (
+                        f"{result}\n\n"
+                        "主智能体验证失败：OpenCode 没有返回 OPENCODE_ARTIFACT_PATH，"
+                        "因此无法证明文件由子智能体创建。请重新委托并要求它在 "
+                        "data/opencode_outputs/ 下写入文件。"
+                    )
                 yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': 'delegate_to_opencode', 'content': result}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'answer', 'content': result}, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
