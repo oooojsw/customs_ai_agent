@@ -3,11 +3,23 @@
     {
       "name": "filesystem",
       "enabled": true,
-      "description": "文件系统访问 MCP 服务器",
+      "description": "Filesystem MCP server",
       "command": "node",
       "args": [
         "node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
         "data"
+      ]
+    },
+    {
+      "name": "opencode_local",
+      "enabled": false,
+      "description": "Local installed opencode entry (disabled by default). Enable only when command output matches MCP stdio protocol.",
+      "command": "opencode",
+      "args": [
+        "run",
+        "--format",
+        "json",
+        "health check"
       ]
     }
   ],
