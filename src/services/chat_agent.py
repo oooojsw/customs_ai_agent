@@ -687,7 +687,7 @@ Never put the user request, script name, payload, or JSON arguments inside skill
         self.tools = [t for t in self.tools if t.name not in deprecated_skill_tools]
 
         async def delegate_to_opencode_tool(task: str) -> str:
-            """Run a delegated task through the locally installed opencode CLI."""
+            """Start an OpenCode child session and inject parent-built context + task."""
             raw_task = (task or "").strip()
             if not raw_task:
                 return "Error: task is required."
@@ -711,94 +711,164 @@ Never put the user request, script name, payload, or JSON arguments inside skill
             if not opencode_path:
                 return "Error: local opencode command was not found in PATH."
 
-            output_dir = os.path.join(os.getcwd(), "data", "opencode_outputs")
+            project_root = os.getcwd()
+            output_dir = os.path.join(project_root, "data", "opencode_outputs")
             os.makedirs(output_dir, exist_ok=True)
-            run_dir = os.path.join(os.getcwd(), "data", "opencode_runs")
+            run_dir = os.path.join(project_root, "data", "opencode_runs")
             os.makedirs(run_dir, exist_ok=True)
-            delegated_prompt = f"""
-EXECUTE THIS TASK NOW. Do not answer that you are ready. Do not ask what to do.
 
-TASK:
-{parsed_task}
+            background_prompt = f"""
+You are OpenCode, a local child coding agent invoked by the parent Customs AI assistant.
+The parent assistant has already decided to delegate this task to you.
 
-You are the local OpenCode child agent called by the customs AI parent process.
-This is a one-shot delegated execution, not an interactive chat.
-
-What you are:
-- You are a separate child coding agent with your own tools.
-- The parent customs AI will read your final answer and verify any artifact you create.
-- Do not speak as the parent customs AI.
-
-What you can do:
-- Inspect and edit files in this repository.
-- Run shell commands when needed.
-- Create small verification artifacts for the parent agent.
-
-What you need from the parent:
-- The concrete task.
-- Any relevant file paths, business context, and acceptance criteria.
-- If context is missing but the task is still safe and obvious, choose a reasonable default and proceed.
-
-Execution contract:
-- Your current working directory is inside this customs project: {run_dir}
-- Stay inside this customs project. Do not modify the OpenCode installation, global OpenCode config, or files outside this project.
-- The only project path you may write artifacts to is this output directory: {output_dir}
-- Do not modify .opencode/, AGENTS.md, AGENTS-opencode.md, start.bat, or source code unless the parent task explicitly asks for code changes.
-- Do not ask follow-up questions unless the task is impossible or unsafe.
-- If the task asks you to create, write, save, or produce any file, create a real file under the output directory above.
-- If the task is ambiguous but references creating a file, choose a useful small markdown file yourself and create it under the output directory above.
-- If the user says "随便" or "you decide", create {os.path.join(output_dir, "opencode_child_note.md")} with a short useful note proving the child agent wrote it.
-- Use your file writing tool or shell commands to create the file. Do not merely describe what you would do.
-- After creating a file, your final response must include exactly one line in this format:
+BACKGROUND CONTEXT
+- Project: an automatic customs declaration assistant for audit, compliance research,
+  local skills, MCP filesystem tools, and report/export workflows.
+- Project root: {project_root}
+- The parent agent is the user-facing customs AI. You are not the parent; you are a
+  subordinate execution agent and must report results back to the parent.
+- You may inspect and edit files inside this project only.
+- Do not modify the local OpenCode installation, OpenCode source package, global OpenCode
+  configuration, files outside this project, or unrelated user files.
+- Do not modify .opencode/, AGENTS.md, AGENTS-opencode.md, startup scripts, or source code
+  unless the current task explicitly asks for that exact change.
+- For proof/artifact tasks, write files only under: {output_dir}
+- If you create a file, your final response must include exactly one line:
   OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>
-- Do not claim a file was created unless it exists on disk.
-- Keep the final answer concise.
+- Do not ask what the task is. The task is supplied in the user message below.
+- If the task is safe but underspecified, choose a small reasonable implementation and proceed.
 """.strip()
 
-            cmd = [opencode_path, "run", "--agent", agent_name, "--format", "json", "--dir", run_dir]
-            if model:
-                cmd.extend(["--model", model])
-            cmd.append(delegated_prompt)
+            task_prompt = f"""
+CURRENT TASK
+{parsed_task}
 
+Execute the task now. Do not merely say you are ready. Do not ask the parent to restate
+this task. If the task asks you to create/write/save a file and does not specify content,
+create a concise markdown note proving the OpenCode child agent wrote it, save it as
+`data/opencode_outputs/opencode_child_note.md`, and return the OPENCODE_ARTIFACT_PATH line.
+""".strip()
+
+            async def stop_opencode_process(proc: Any) -> None:
+                if not proc or proc.returncode is not None:
+                    return
+                if sys.platform == "win32":
+                    killer = await asyncio.create_subprocess_exec(
+                        "taskkill",
+                        "/T",
+                        "/F",
+                        "/PID",
+                        str(proc.pid),
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await killer.communicate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except Exception:
+                        pass
+                    return
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except Exception:
+                    proc.kill()
+
+            async def start_opencode_server() -> tuple[asyncio.subprocess.Process, str]:
+                last_error = ""
+                for port in range(4096, 4110):
+                    cmd = [
+                        opencode_path,
+                        "serve",
+                        "--hostname",
+                        "127.0.0.1",
+                        "--port",
+                        str(port),
+                    ]
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=project_root,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    base_url = f"http://127.0.0.1:{port}"
+                    async with httpx.AsyncClient(timeout=2.0) as client:
+                        for _ in range(40):
+                            if proc.returncode is not None:
+                                stderr = await proc.stderr.read() if proc.stderr else b""
+                                last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
+                                break
+                            try:
+                                response = await client.get(
+                                    f"{base_url}/session/status",
+                                    params={"directory": project_root},
+                                )
+                                if response.status_code < 500:
+                                    return proc, base_url
+                            except Exception as exc:
+                                last_error = str(exc)
+                            await asyncio.sleep(0.25)
+                    await stop_opencode_process(proc)
+                raise RuntimeError(f"failed to start opencode server: {last_error}")
+
+            def extract_text(response_json: Any) -> str:
+                parts = response_json.get("parts") if isinstance(response_json, dict) else []
+                text_parts = []
+                if isinstance(parts, list):
+                    for part in parts:
+                        if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
+                            text_parts.append(str(part["text"]).strip())
+                if text_parts:
+                    return "\n".join([p for p in text_parts if p]).strip()
+                return json.dumps(response_json, ensure_ascii=False)[-4000:]
+
+            proc = None
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=240)
+                proc, base_url = await start_opencode_server()
+                async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=10.0)) as client:
+                    create_resp = await client.post(
+                        f"{base_url}/session",
+                        params={"directory": project_root},
+                        json={
+                            "title": "Customs AI delegated OpenCode task",
+                            "permission": [
+                                {"permission": "edit", "pattern": "*", "action": "allow"},
+                                {"permission": "bash", "pattern": "*", "action": "allow"},
+                            ],
+                        },
+                    )
+                    create_resp.raise_for_status()
+                    session_info = create_resp.json()
+                    session_id = str(session_info.get("id") or "").strip()
+                    if not session_id:
+                        return f"Error: opencode session creation returned no id.\n{session_info}"
+
+                    body: dict[str, Any] = {
+                        "agent": agent_name,
+                        "system": background_prompt,
+                        "parts": [{"type": "text", "text": task_prompt}],
+                    }
+                    if model and "/" in model:
+                        provider_id, model_id = model.split("/", 1)
+                        body["model"] = {"providerID": provider_id, "modelID": model_id}
+
+                    prompt_resp = await client.post(
+                        f"{base_url}/session/{session_id}/message",
+                        params={"directory": project_root},
+                        json=body,
+                    )
+                    prompt_resp.raise_for_status()
+                    result = extract_text(prompt_resp.json())
+
+                if len(result) > 6000:
+                    result = result[-6000:]
+                return f"opencode completed. sessionID={session_id}\n{result}"
             except asyncio.TimeoutError:
                 return "Error: opencode execution timed out after 240 seconds."
             except Exception as e:
-                return f"Error: failed to start opencode: {str(e)}"
-
-            out_text = (stdout or b"").decode("utf-8", errors="ignore").strip()
-            err_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
-            if proc.returncode != 0:
-                return f"Error: opencode failed with exit code {proc.returncode}.\n{err_text or out_text}"
-
-            text_parts = []
-            session_id = ""
-            for line in out_text.splitlines():
-                try:
-                    event = json.loads(line)
-                except Exception:
-                    continue
-                session_id = event.get("sessionID") or session_id
-                part = event.get("part") or {}
-                if event.get("type") == "text" and part.get("text"):
-                    text_parts.append(str(part["text"]).strip())
-
-            result = "\n".join([p for p in text_parts if p]).strip()
-            if not result:
-                result = out_text[-4000:] if out_text else "(opencode returned no text output)"
-            if len(result) > 6000:
-                result = result[-6000:]
-            prefix = f"opencode completed. sessionID={session_id}\n" if session_id else "opencode completed.\n"
-            if err_text:
-                result += f"\n\n[stderr]\n{err_text[-1000:]}"
-            return prefix + result
-
+                return f"Error: failed to execute opencode child session: {str(e)}"
+            finally:
+                await stop_opencode_process(proc)
         self.tools.append(Tool(
             name="delegate_to_opencode",
             func=lambda x: "This tool only supports async execution.",
@@ -1216,24 +1286,22 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
 """ if self.mcp_tools else ""
 
         opencode_section = """
-【本机 OpenCode 子智能体】
-OpenCode 是一个独立的本机子智能体，不是你本人，也不是 MCP server。你是父智能体；OpenCode 是被你委托执行任务的外部编码/文件/命令行执行智能体。
+[Local OpenCode Child Agent]
+OpenCode is an external child agent invoked by you. It is not you, and it is not the MCP filesystem tool. You are the parent agent: you understand the user's request, prepare the delegation prompt, verify the result, and then answer the user. OpenCode only executes the local coding/file/shell task you delegate.
 
-当用户明确要求“调用 opencode”、“让 opencode 做”、“用本机 opencode 处理”、“让子智能体做”，或需要把较大的代码/文件/脚本任务委托给外部成熟智能体时，必须调用 `delegate_to_opencode`。
+When the user explicitly asks to call OpenCode, asks a child agent to do something, or gives a larger coding/file/script task that should be delegated, call `delegate_to_opencode`.
 
-调用前你必须把以下信息组织进任务说明：
-1. 当前业务场景：这是智慧口岸/自动报关项目。
-2. 用户真正要 OpenCode 完成的动作，而不是你自己的解释。
-3. 可操作范围：当前项目仓库；如果要写文件，必须写到 `data/opencode_outputs/`。
-4. 验收标准：需要返回什么结果、文件路径、或命令输出。
-5. 禁止混淆身份：不要让 OpenCode 说“我就是主智能体”；它只能作为子智能体报告执行结果。
-6. 边界约束：OpenCode 只能服务当前自动报关项目，不能修改本机 OpenCode 安装、全局配置或项目外文件。
+Before calling `delegate_to_opencode`, write a concrete task description. The tool will inject two prompt layers directly into a new OpenCode session:
+1. Background context: this is the automatic customs declaration project, the project root, OpenCode is a child agent, it may only serve this project, where artifacts should be written, and what paths are forbidden.
+2. Current task: what OpenCode must do this time, expected output/artifact, and acceptance criteria.
 
-调用后你必须区分两件事：
-- OpenCode 的回答只是子智能体执行结果。
-- 你作为父智能体要对结果做验证、总结，再回复用户。
+Do not pass vague text like "anything", "you decide", or "do it" without making it executable. If the user is intentionally vague but asks for a proof file, turn it into a specific task such as: create a small markdown file under `data/opencode_outputs/` proving the OpenCode child agent wrote it.
 
-如果用户要求“让 opencode 创建/写入文件，然后你读取”，必须要求 OpenCode 创建真实文件，并在最终回复中返回 `OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>`。随后你必须读取该文件并把验证结果告诉用户。不能改成你自己用 MCP 写文件，也不能只口头说 OpenCode 做了。
+If the user asks OpenCode to create/write a file and then asks you to read it, OpenCode must create a real file and return:
+`OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>`
+After that, you must read the file yourself and report the verification result. Do not replace this with your own MCP write, and do not merely claim OpenCode did it.
+
+Boundary: OpenCode may only serve this local automatic customs project. Do not ask it to modify the local OpenCode installation, global OpenCode configuration, other desktop projects, or files outside this project unless the user explicitly changes this constraint.
 """
 
         self.system_prompt_text = f"""
