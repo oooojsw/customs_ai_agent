@@ -7,6 +7,7 @@ import io
 import requests
 import time
 import re
+import shutil
 from typing import List, Optional, Any
 
 # ============================================================
@@ -683,6 +684,88 @@ Never put the user request, script name, payload, or JSON arguments inside skill
         # ???????????? invoke_skill
         deprecated_skill_tools = {"use_skill", "read_skill_resource", "list_skill_resources", "run_skill_script"}
         self.tools = [t for t in self.tools if t.name not in deprecated_skill_tools]
+
+        async def delegate_to_opencode_tool(task: str) -> str:
+            """Run a delegated task through the locally installed opencode CLI."""
+            raw_task = (task or "").strip()
+            if not raw_task:
+                return "Error: task is required."
+
+            model = ""
+            agent_name = "build"
+            parsed_task = raw_task
+            try:
+                parsed = json.loads(raw_task)
+                if isinstance(parsed, dict):
+                    parsed_task = str(parsed.get("task") or parsed.get("prompt") or "").strip()
+                    model = str(parsed.get("model") or "").strip()
+                    agent_name = str(parsed.get("agent") or "build").strip() or "build"
+            except Exception:
+                parsed_task = raw_task
+
+            if not parsed_task:
+                return "Error: task is required."
+
+            opencode_path = shutil.which("opencode")
+            if not opencode_path:
+                return "Error: local opencode command was not found in PATH."
+
+            cmd = [opencode_path, "run", "--agent", agent_name, "--format", "json"]
+            if model:
+                cmd.extend(["--model", model])
+            cmd.append(parsed_task)
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=240)
+            except asyncio.TimeoutError:
+                return "Error: opencode execution timed out after 240 seconds."
+            except Exception as e:
+                return f"Error: failed to start opencode: {str(e)}"
+
+            out_text = (stdout or b"").decode("utf-8", errors="ignore").strip()
+            err_text = (stderr or b"").decode("utf-8", errors="ignore").strip()
+            if proc.returncode != 0:
+                return f"Error: opencode failed with exit code {proc.returncode}.\n{err_text or out_text}"
+
+            text_parts = []
+            session_id = ""
+            for line in out_text.splitlines():
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                session_id = event.get("sessionID") or session_id
+                part = event.get("part") or {}
+                if event.get("type") == "text" and part.get("text"):
+                    text_parts.append(str(part["text"]).strip())
+
+            result = "\n".join([p for p in text_parts if p]).strip()
+            if not result:
+                result = out_text[-4000:] if out_text else "(opencode returned no text output)"
+            if len(result) > 6000:
+                result = result[-6000:]
+            prefix = f"opencode completed. sessionID={session_id}\n" if session_id else "opencode completed.\n"
+            if err_text:
+                result += f"\n\n[stderr]\n{err_text[-1000:]}"
+            return prefix + result
+
+        self.tools.append(Tool(
+            name="delegate_to_opencode",
+            func=lambda x: "This tool only supports async execution.",
+            coroutine=delegate_to_opencode_tool,
+            description=(
+                "Delegate a complex coding or filesystem task to the locally installed opencode CLI. "
+                "Input can be plain text or JSON like {\"task\":\"...\",\"agent\":\"build\"}. "
+                "Use this whenever the user explicitly asks to call opencode."
+            )
+        ))
+        self._delegate_to_opencode_tool = delegate_to_opencode_tool
+
         async def generate_compliance_report_tool(input_text: str) -> str:
             """
             深度研究工具：生成完整的合规建议书或深度研判报告。
@@ -1085,6 +1168,12 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
 注意：MCP 工具执行结果直接返回给你使用。
 """ if self.mcp_tools else ""
 
+        opencode_section = """
+【本机 OpenCode 子智能体】
+当用户明确要求“调用 opencode”、“让 opencode 做”、“用本机 opencode 处理”，或需要把较大的代码/文件任务委托给外部成熟智能体时，必须调用 `delegate_to_opencode`。
+调用时传入任务本身，默认使用本机已验证可用的 `build` agent；不要把 opencode 当作 MCP server 调用。
+"""
+
         self.system_prompt_text = f"""
 你是一名智慧口岸AI专家，负责报关咨询和自动审单。
 
@@ -1097,6 +1186,7 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
 {skills_section}
 {deep_research_section}
 {mcp_section}
+{opencode_section}
 """
 
     async def initialize_mcp_tools(self) -> None:
@@ -1232,6 +1322,14 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
             print(f"[Tools] 当前工具列表 ({len(self.tools)} 个):")
             for i, tool in enumerate(self.tools, 1):
                 print(f"  {i}. {tool.name}")
+
+            if "opencode" in (user_input or "").lower():
+                yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': 'delegate_to_opencode', 'content': '正在调用本机 OpenCode 子智能体...'}, ensure_ascii=False)}\n\n"
+                result = await self._delegate_to_opencode_tool(user_input)
+                yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': 'delegate_to_opencode', 'content': result}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'answer', 'content': result}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+                return
             
             # 使用动态系统提示词
             dynamic_prompt = self._get_dynamic_system_prompt(self.system_prompt_text)
@@ -1304,6 +1402,12 @@ invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calcul
                             "animation": "fade",
                             "show_progress": True,
                             "status_color": "cyan"
+                        },
+                        "delegate_to_opencode": {
+                            "title": "正在调用本机 OpenCode 子智能体...",
+                            "animation": "fade",
+                            "show_progress": True,
+                            "status_color": "green"
                         }
                     }.get(t_name, None)
 
