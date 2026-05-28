@@ -9,7 +9,8 @@ let scrollTimeout = null;
 function getToolDisplayName(toolName) {
     const toolNames = {
         'audit_declaration': t('tool_audit_declaration'),
-        'search_customs_regulations': t('tool_search_customs_regulations')
+        'search_customs_regulations': t('tool_search_customs_regulations'),
+        'invoke_skill': '执行技能插件 (Skill Execution)'
     };
     return toolNames[toolName] || toolName;
 }

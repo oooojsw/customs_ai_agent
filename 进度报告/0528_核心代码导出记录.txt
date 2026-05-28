@@ -1,0 +1,27 @@
+﻿核心代码导出记录 - 2026-05-28
+
+一、目标
+- 按“收集某个目录下代码文件并统一导出”的思路，导出当前项目核心代码快照。
+
+二、脚本位置
+- C:\Users\ZhuanZ\Desktop\Customs\auto Customs\001-customs_ai_agent - 1211 - 1215last stream try -\scripts\export-core-source-to-desktop.mjs
+
+三、执行命令
+- node scripts/export-core-source-to-desktop.mjs
+
+四、导出结果
+- 汇总代码文件：C:\Users\ZhuanZ\Desktop\core-code-export\customs-core-source-20260528-155050.txt
+- 文件清单（manifest）：C:\Users\ZhuanZ\Desktop\core-code-export\customs-core-manifest-20260528-155050.txt
+- 导出文件数量：58
+
+五、说明
+- 当前导出覆盖核心目录：src、web、config、scripts，以及 README.md、requirements.txt。
+- 已自动跳过 .git、node_modules、data、tests 等非核心或大体积目录。
+
+六、补充更新（2026-05-28 16:26）
+- 用户反馈“核心代码导出过大”，已切换为严格核心清单导出。
+- 新脚本：C:\Users\ZhuanZ\Desktop\Customs\auto Customs\001-customs_ai_agent - 1211 - 1215last stream try -\scripts\export-strict-core-source-to-desktop.mjs
+- 严格核心导出文件：C:\Users\ZhuanZ\Desktop\core-code-export\customs-strict-core-source-20260528-162639.txt
+- 严格核心清单文件：C:\Users\ZhuanZ\Desktop\core-code-export\customs-strict-core-manifest-20260528-162639.txt
+- 严格核心文件数：14
+- 说明：旧的大体积导出（44文件版本）已删除。

@@ -585,6 +585,104 @@ class CustomsChatAgent:
         ))
 
         # ========== 深度研究工具链（功能三：合规报告生成） ==========
+
+        # ========== Skills Runtime?Registry + Activation? ==========
+        async def invoke_skill_tool(skill_name: str, action: str = "guide", payload: str = "") -> str:
+            """Unified skill runtime entrypoint: guide/resource/script."""
+            if not self.skill_manager:
+                return "???????"
+
+            skill_name = (skill_name or "").strip()
+            action = (action or "").strip().lower()
+            payload = payload or ""
+
+            # LangChain Tool may pass a single string. Accept the common shapes the
+            # model produces and normalize them into the three explicit fields.
+            raw_input = skill_name
+            if action == "guide" and payload == "":
+                parsed = None
+                json_start = raw_input.find("{")
+                json_end = raw_input.rfind("}")
+                if json_start >= 0 and json_end > json_start:
+                    try:
+                        parsed = json.loads(raw_input[json_start:json_end + 1])
+                    except Exception:
+                        parsed = None
+
+                if isinstance(parsed, dict):
+                    skill_name = str(parsed.get("skill_name") or parsed.get("name") or "").strip()
+                    action = str(parsed.get("action") or "guide").strip().lower()
+                    payload = str(parsed.get("payload") or "").strip()
+                elif "|" in raw_input:
+                    parts = raw_input.split("|", 2)
+                    if len(parts) == 3:
+                        skill_name, script_name, args_json = [p.strip() for p in parts]
+                        action = "script"
+                        payload = f"{script_name}|{args_json}"
+                    elif len(parts) == 2:
+                        skill_name, second = [p.strip() for p in parts]
+                        action = "resource" if "." in second else "guide"
+                        payload = second if action == "resource" else ""
+                elif raw_input not in self.skill_manager.skills:
+                    for registered_name in self.skill_manager.skills:
+                        if registered_name in raw_input:
+                            skill_name = registered_name
+                            break
+
+            if action == "guide":
+                guide = self.skill_manager.load_skill_content(skill_name)
+                if not guide:
+                    return f"?? {skill_name} ???????"
+                resources = self.skill_manager.skills.get(skill_name, {}).get("resource_files", [])
+                resources_text = ""
+                if resources:
+                    resources_text = "\n\n?????:\n" + "\n".join([f"- {r}" for r in resources])
+                return f"??????{skill_name}?\n\n{guide}{resources_text}"
+
+            if action == "resource":
+                if not payload.strip():
+                    return "???action=resource ? payload ????????"
+                return self.skill_manager.get_resource_content(skill_name, payload.strip())
+
+            if action == "script":
+                if not self.script_executor:
+                    return "????????"
+                try:
+                    parts = payload.split("|", 1)
+                    if len(parts) != 2:
+                        return "???action=script ? payload ???? 'script.py|{json}'"
+                    script_name, args_json = parts
+                    args = json.loads(args_json)
+                    script_path = self.skill_manager.get_script_path(skill_name, script_name.strip())
+                    result = self.script_executor.execute(script_path, args)
+                    if result.get("success"):
+                        if isinstance(result.get("result"), dict):
+                            return json.dumps(result["result"], ensure_ascii=False, indent=2)
+                        return str(result.get("result", ""))
+                    return f"??????: {result.get('error', '????')}"
+                except Exception as e:
+                    return f"??????: {str(e)}"
+
+            return "????? action???: guide/resource/script"
+
+        self.tools.append(Tool(
+            name="invoke_skill",
+            func=lambda x: "??????????",
+            coroutine=invoke_skill_tool,
+            description="""Unified skill runtime.
+Use this tool only when the user request matches a registered skill.
+Preferred input is a JSON object with exactly these fields:
+{"skill_name":"tax_calculator","action":"guide","payload":""}
+Allowed action values:
+- guide: activate the skill manual first.
+- resource: read one resource file; payload must be only the file name, for example "tax_rates.csv".
+- script: run one script; payload must be "script.py|{json}", for example "calculate_duty.py|{\\"cif_price\\":10000,\\"hs_code\\":\\"85423100\\"}".
+Never put the user request, script name, payload, or JSON arguments inside skill_name. skill_name must be exactly one registered skill name."""
+        ))
+
+        # ???????????? invoke_skill
+        deprecated_skill_tools = {"use_skill", "read_skill_resource", "list_skill_resources", "run_skill_script"}
+        self.tools = [t for t in self.tools if t.name not in deprecated_skill_tools]
         async def generate_compliance_report_tool(input_text: str) -> str:
             """
             深度研究工具：生成完整的合规建议书或深度研判报告。
@@ -825,25 +923,38 @@ class CustomsChatAgent:
             ))
 
         # --- 5. 构建图智能体 ---
-        # 构建扩展能力提示（四级加载架构说明）
+        # 构建扩展能力提示（Registry + Activation）
         skills_section = f"""
-【扩展能力中心 - 四级加载架构】
-L1层（技能清单）- 当前已加载以下技能：
+【外置技能库 - Registry + Activation】
+当前已注册技能：
 {skills_registry}
 
-【技能调度策略】
-1. L2加载：当用户问题与上述技能描述匹配时，调用 use_skill(skill_name, query)
-2. L3加载：阅读技能手册后，如需参考数据文件，调用 read_skill_resource(skill_name, file_name)
-3. 资源探测：不确定有哪些资源时，先调用 list_skill_resources(skill_name)
-4. L4计算：如需执行复杂计算或数据处理，调用 run_skill_script(skill_name, script_name, args_json)
+【技能调度规则】
+你只能通过 invoke_skill 使用技能。不要调用 use_skill、read_skill_resource、list_skill_resources、run_skill_script。
 
-示例流程：
-用户: "这批货要交多少税？"
-→ 调用 use_skill("tax_calculator", "这批货要交多少税")
-→ 手册提示"参考 tax_rates.csv 或运行 calculate_duty.py"
-→ 调用 run_skill_script("tax_calculator", "calculate_duty.py", {{"cif_price": 10000, "hs_code": "85423100"}})
-→ 返回计算结果: {{duty: 0, vat: 1300}}
+invoke_skill 的参数必须保持三段分离：
+1. skill_name：只能填写上方注册表里的精确技能名，例如 "tax_calculator"。禁止把用户问题、脚本名、文件名、JSON 参数拼进 skill_name。
+2. action：只能是 "guide"、"resource"、"script" 三者之一。
+3. payload：除 skill_name 和 action 之外的内容都放这里；guide 时为空字符串。
+
+【两段式流程】
+1. Registry 路由：先根据注册表选择最匹配的 skill_name。
+2. Activation 执行：第一次必须调用 invoke_skill({{"skill_name":"技能名","action":"guide","payload":""}}) 阅读手册；手册要求读资源时再 action="resource"；手册要求计算时再 action="script"。
+
+【正确示例】
+用户: "CIF价格10000美元，HS编码85423100，帮我算税"
+第一步调用: invoke_skill({{"skill_name":"tax_calculator","action":"guide","payload":""}})
+如果手册说明可运行 calculate_duty.py，再调用:
+invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calculate_duty.py|{{\\"cif_price\\":10000,\\"hs_code\\":\\"85423100\\"}}"}})
+
+【错误示例】
+不要这样调用: invoke_skill("tax_calculator|CIF价格10000美元...")
+不要这样调用: invoke_skill({{"skill_name":"tax_calculator|calculate_duty.py|{{...}}","action":"guide","payload":""}})
+如果你发现 skill_name 里出现 "|"、".py"、"{{"、用户原句或文件名，立即改正：skill_name 只保留精确技能名，其余放入 payload。
 """ if self.skill_manager else ""
+
+        if self.skill_manager:
+            skills_section += "\n【硬性约束】技能调用只允许 invoke_skill，且 skill_name 必须精确等于注册表中的一个名字。"
 
         # 构建深度研究工具提示（功能三）
         deep_research_section = """
@@ -897,23 +1008,36 @@ L1层（技能清单）- 当前已加载以下技能：
             skills_registry = self.skill_manager.get_skill_registry_text()
 
         skills_section = f"""
-【扩展能力中心 - 四级加载架构】
-L1层（技能清单）- 当前已加载以下技能：
+【外置技能库 - Registry + Activation】
+当前已注册技能：
 {skills_registry}
 
-【技能调度策略】
-1. L2加载：当用户问题与上述技能描述匹配时，调用 use_skill(skill_name, query)
-2. L3加载：阅读技能手册后，如需参考数据文件，调用 read_skill_resource(skill_name, file_name)
-3. 资源探测：不确定有哪些资源时，先调用 list_skill_resources(skill_name)
-4. L4计算：如需执行复杂计算或数据处理，调用 run_skill_script(skill_name, script_name, args_json)
+【技能调度规则】
+你只能通过 invoke_skill 使用技能。不要调用 use_skill、read_skill_resource、list_skill_resources、run_skill_script。
 
-示例流程：
-用户: "这批货要交多少税？"
-→ 调用 use_skill("tax_calculator", "这批货要交多少税")
-→ 手册提示"参考 tax_rates.csv 或运行 calculate_duty.py"
-→ 调用 run_skill_script("tax_calculator", "calculate_duty.py", {{"cif_price": 10000, "hs_code": "85423100"}})
-→ 返回计算结果: {{duty: 0, vat: 1300}}
+invoke_skill 的参数必须保持三段分离：
+1. skill_name：只能填写上方注册表里的精确技能名，例如 "tax_calculator"。禁止把用户问题、脚本名、文件名、JSON 参数拼进 skill_name。
+2. action：只能是 "guide"、"resource"、"script" 三者之一。
+3. payload：除 skill_name 和 action 之外的内容都放这里；guide 时为空字符串。
+
+【两段式流程】
+1. Registry 路由：先根据注册表选择最匹配的 skill_name。
+2. Activation 执行：第一次必须调用 invoke_skill({{"skill_name":"技能名","action":"guide","payload":""}}) 阅读手册；手册要求读资源时再 action="resource"；手册要求计算时再 action="script"。
+
+【正确示例】
+用户: "CIF价格10000美元，HS编码85423100，帮我算税"
+第一步调用: invoke_skill({{"skill_name":"tax_calculator","action":"guide","payload":""}})
+如果手册说明可运行 calculate_duty.py，再调用:
+invoke_skill({{"skill_name":"tax_calculator","action":"script","payload":"calculate_duty.py|{{\\"cif_price\\":10000,\\"hs_code\\":\\"85423100\\"}}"}})
+
+【错误示例】
+不要这样调用: invoke_skill("tax_calculator|CIF价格10000美元...")
+不要这样调用: invoke_skill({{"skill_name":"tax_calculator|calculate_duty.py|{{...}}","action":"guide","payload":""}})
+如果你发现 skill_name 里出现 "|"、".py"、"{{"、用户原句或文件名，立即改正：skill_name 只保留精确技能名，其余放入 payload。
 """ if self.skill_manager else ""
+
+        if self.skill_manager:
+            skills_section += "\n【硬性约束】技能调用只允许 invoke_skill，且 skill_name 必须精确等于注册表中的一个名字。"
 
         deep_research_section = """
 【深度研究工具链 - 按需感知机制】
@@ -1174,6 +1298,12 @@ L1层（技能清单）- 当前已加载以下技能：
                             "animation": "fade",
                             "show_progress": False,
                             "status_color": "purple"
+                        },
+                        "invoke_skill": {
+                            "title": "????????...",
+                            "animation": "fade",
+                            "show_progress": True,
+                            "status_color": "cyan"
                         }
                     }.get(t_name, None)
 
