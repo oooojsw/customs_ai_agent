@@ -1117,7 +1117,7 @@ L1层（技能清单）- 当前已加载以下技能：
                 HumanMessage(content=user_input)
             ]
 
-            config = {"configurable": {"thread_id": session_id}}
+            config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
             has_sent_content = False
             is_in_tool_call = False  # 🔥 工具调用状态标志
 

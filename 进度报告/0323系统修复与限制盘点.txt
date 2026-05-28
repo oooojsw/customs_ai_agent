@@ -1,0 +1,166 @@
+================================================================================
+                    智慧口岸AI智能体系统 - 进度报告
+================================================================================
+日期：2026年3月23日
+时间：下午
+记录人：AI助手（Sisyphus）
+
+================================================================================
+                              第一部分：本次工作概述
+================================================================================
+
+一、问题背景
+-----------
+本次工作主要围绕服务启动后出现的几个问题进行排查和修复：
+
+1. MCP Bridge 工具加载失败（ClosedResourceError）
+2. Agent 出现 recursion_limit 错误（达到25轮上限）
+3. 确认系统各项限制参数
+
+二、涉及文件
+-----------
+- src/services/chat_agent.py（主修改）
+- src/services/mcp_bridge.py（分析）
+- src/main.py（服务管理）
+- requirements.txt（依赖）
+
+================================================================================
+                              第二部分：问题排查与修复
+================================================================================
+
+一、MCP Bridge 工具加载失败
+-------------------------
+
+【现象】
+日志中出现大量异常：
+```
+anyio.ClosedResourceError
+[MCPBridge] ❌ list_tools() 失败
+[ChatAgent] ⚠️ MCP 工具加载失败或无可用工具
+```
+结果：MCP 14个工具全部加载失败，仅剩9个内置Skill工具。
+
+【分析过程】
+1. 检查 mcp 包版本：
+   - pip show mcp → 指向 AppData/Roaming/Python 环境（版本较旧）
+   - 实际运行的是 miniconda3 环境中的 mcp 1.26.0
+   - 根本原因：pip show 查错了Python环境
+
+2. 检查 Node.js MCP Server：
+   - server 本身运行正常，手动 JSON-RPC 测试成功返回14个工具
+   - 关键发现：notifications/initialized 返回 "Method not found"
+   - 但 tools/list 仍然成功返回
+
+3. 确认 mcp SDK 1.26.0：
+   - 通过 Python 直接 import 测试确认
+   - LATEST_PROTOCOL_VERSION: 2025-11-25
+   - 直接 Python 测试 stdio_client + ClientSession 成功
+
+【结论】
+mcp SDK 实际已是 1.26.0 版本，问题为环境检测混淆。重启服务后恢复正常。
+
+二、recursion_limit 修复（两次尝试）
+----------------------------------
+
+【第一次尝试 - 错误】
+在 create_react_agent() 中直接传入参数：
+```python
+self.agent = create_react_agent(
+    model=self.llm,
+    tools=self.tools,
+    checkpointer=MEMORY,
+    recursion_limit=100,  # ❌ 该版本不支持此参数
+)
+```
+
+【错误】
+```
+[ChatAgent] ❌ 创建智能体失败: 
+create_react_agent() got unexpected keyword arguments: 
+{'recursion_limit': 100}
+```
+导致 Agent 创建失败，前端完全不吐字。
+
+【第二次尝试 - 正确】
+通过运行时 config 参数传入：
+```python
+config = {
+    "configurable": {"thread_id": session_id},
+    "recursion_limit": 100  # ✅ 正确位置
+}
+async for event in self.agent.astream_events(
+    {"messages": input_messages},
+    config=config,
+    version="v2"
+):
+```
+
+【LangGraph 版本信息】
+- langgraph: 1.0.4
+- langgraph-prebuilt: 1.0.5
+- create_react_agent 参数中无 recursion_limit
+- recursion_limit 属于 RunnableConfig，需通过 config 字典传入
+
+三、系统限制全面盘点
+-----------------
+
+| 配置 | 当前值 | 位置 | 说明 |
+|------|--------|------|------|
+| recursion_limit | 100（已改） | chat_agent.py:1121 | 工具调用最大轮数 |
+| HTTP超时 | 120秒 | chat_agent.py:113 | httpx单次请求超时 |
+| MCP初始化超时 | 30秒 | mcp_bridge.py:54 | MCP服务器启动超时 |
+| 脚本执行超时 | 10秒 | chat_agent.py:315 | L4脚本执行器 |
+| LLM temperature | 0.3 | chat_agent.py:122 | 回答确定性/创造性 |
+| 流式补丁 | parallel_tool_calls=False | chat_agent.py:127 | DeepSeek不支持并行调用 |
+
+| 限制类型 | 值 | 说明 |
+|----------|------|------|
+| DeepSeek RPM | 60-3000 | 取决于账户等级 |
+| DeepSeek TPM | 几千-几十万 | 取决于模型 |
+| 上下文窗口 | 64K tokens | DeepSeek-V3 |
+| 对话历史 | InMemorySaver | 服务重启清空 |
+| MCP访问范围 | 仅 data/ 目录 | 安全隔离 |
+
+================================================================================
+                              第三部分：最终状态
+================================================================================
+
+✅ 所有模块初始化成功
+✅ 知识库（RAG + Embedding 模型 bge-small-zh-v1.5）
+✅ 对话引擎（Skill + MCP 双系统，23个工具）
+✅ 研判建议书引擎
+✅ LLM配置
+✅ MCP文件系统桥接（14个工具）
+✅ recursion_limit 已正确设置为 100
+
+【服务状态】
+- PID: 31944
+- 端口: 8000
+- 模型: deepseek-chat
+- MCP工具: 14个
+- 内置工具: 9个
+- 总计: 23个
+
+================================================================================
+                              第四部分：经验教训
+================================================================================
+
+1. recursion_limit 不能放在 create_react_agent() 参数中
+   - 该参数属于 RunnableConfig
+   - 必须通过 agent 调用时的 config 字典传入
+
+2. pip show 可能指向错误的 Python 环境
+   - 需通过 Python 直接 import 验证
+   - pip show 的 Location 可能与运行环境的 sys.executable 不同
+
+3. LangGraph 1.0.4 的参数规范
+   - create_react_agent 不接受 recursion_limit
+   - 正确的调用方式：agent.astream_events(config={"recursion_limit": N})
+
+================================================================================
+                              报告结束
+================================================================================
+报告人：AI助手（Sisyphus）
+完成度：100%
+下一步：正常使用
+================================================================================
