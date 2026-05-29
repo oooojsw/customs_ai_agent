@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     
     <!-- 引入自定义样式 -->
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=3.0.4-md-preview">
 </head>
 
 <body class="h-screen flex">
@@ -425,7 +425,7 @@
                     </div>
                     <div class="flex gap-2">
                         <input id="imageInput" type="file" accept="image/*"
-                            class="hidden" onchange="document.getElementById('fileNameDisplay').innerText = this.files[0]?.name || t('select_image')">
+                            class="hidden" onchange="handleImageSelection(this)">
 
                         <button onclick="document.getElementById('imageInput').click()"
                             class="flex-1 px-3 py-2 bg-slate-600 hover:bg-slate-500 text-slate-200 rounded text-xs border border-slate-500 transition flex items-center justify-center gap-2">
@@ -436,6 +436,14 @@
                             class="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs shadow-lg transition flex items-center gap-1">
                             <i class="fa-solid fa-wand-magic-sparkles"></i> <span data-i18n="recognize_btn">识别</span>
                         </button>
+                        <button onclick="window.open('http://172.18.23.177:7861/', '_blank', 'noopener')"
+                            class="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-cyan-300 rounded text-xs border border-slate-600 transition flex items-center gap-1"
+                            title="打开 OCR 服务页面">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> <span>OCR</span>
+                        </button>
+                    </div>
+                    <div id="imagePreviewWrap" class="hidden mt-3 rounded border border-slate-600 bg-slate-900/60 overflow-hidden">
+                        <img id="imagePreview" alt="图片预览" class="w-full max-h-48 object-contain bg-slate-950">
                     </div>
                 </div>
 
@@ -454,8 +462,20 @@
                 </div>
 
                 <!-- 文本域 -->
-                <div class="flex-1 relative neon-border rounded overflow-hidden bg-slate-900/80 focus-neon">
-                    <textarea id="rawDataInput" class="w-full h-full bg-transparent text-slate-300 p-4 font-mono text-xs resize-none focus:outline-none" data-i18n-placeholder="raw_data_placeholder" placeholder="在此粘贴报关数据..."></textarea>
+                <div class="flex-1 relative neon-border rounded overflow-hidden bg-slate-900/80 focus-neon flex flex-col min-h-0">
+                    <div class="h-9 px-2 border-b border-slate-700 bg-slate-900/80 flex items-center justify-between shrink-0">
+                        <div class="flex items-center gap-1">
+                            <button id="rawDataEditTab" type="button" onclick="switchRawDataMode('edit')" class="raw-data-tab active px-3 py-1 text-xs rounded text-cyan-300 bg-cyan-500/10 border border-cyan-500/40">
+                                编辑
+                            </button>
+                            <button id="rawDataPreviewTab" type="button" onclick="switchRawDataMode('preview')" class="raw-data-tab px-3 py-1 text-xs rounded text-slate-400 border border-transparent hover:text-cyan-300">
+                                预览
+                            </button>
+                        </div>
+                        <span id="rawDataFormatLabel" class="text-[10px] text-slate-500">Markdown</span>
+                    </div>
+                    <textarea id="rawDataInput" class="flex-1 w-full min-h-0 bg-transparent text-slate-300 p-4 font-mono text-xs resize-none focus:outline-none" data-i18n-placeholder="raw_data_placeholder" placeholder="在此粘贴报关数据..."></textarea>
+                    <div id="rawDataPreview" class="hidden flex-1 min-h-0 overflow-auto p-4 markdown-preview text-xs text-slate-200"></div>
                 </div>
                 <button id="startBtn" onclick="startAnalysis()" class="mt-4 w-full py-3 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded shadow-lg transition flex justify-center items-center gap-2">
                     <i class="fa-solid fa-rocket"></i> <span data-i18n="start_analysis">开始智能研判</span>
@@ -617,7 +637,7 @@
     <script src="js/i18n.js"></script>
     <script src="js/config.js?v=3.0.3"></script>
     <script src="js/app.js?v=3.0.3"></script>
-    <script src="js/audit.js?v=3.0.3"></script>
+    <script src="js/audit.js?v=3.0.4-md-preview"></script>
     <script src="js/chat.js?v=3.0.3"></script>
     <script src="js/report.js?v=3.0.3"></script>
     <script src="js/index_manager.js?v=3.0.3"></script>

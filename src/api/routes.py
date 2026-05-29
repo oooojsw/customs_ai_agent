@@ -1,20 +1,17 @@
+import os
 import traceback
+from typing import Optional
+
+import httpx
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 
 # --- 核心服务导入 ---
 from src.services.data_client import DataClient
 from src.core.orchestrator import RiskAnalysisOrchestrator
 from src.services.report_agent import ComplianceReporter
 from src.database.pdf_repository import PDFRepository
-
-# 容错导入
-try:
-    from src.services.image_extractor import ImageTextExtractor, NotDeclarationError
-except ImportError:
-    ImageTextExtractor = None
 
 # --- 批量处理与数据库 (保留全量功能) ---
 try:
@@ -27,6 +24,7 @@ except ImportError:
     print("⚠️ [System] 数据库相关依赖未完全安装，批量功能将受限")
 
 router = APIRouter()
+TABLE_OCR_URL = os.getenv("TABLE_OCR_URL", "http://172.18.23.177:7861/api/recognize")
 
 # --- 辅助函数：动态获取 LLM 配置 ---
 async def get_current_llm_config(req: Request) -> dict:
@@ -144,25 +142,42 @@ async def analyze_declaration_image(
     file: UploadFile = File(...),
     language: str = "zh"  # 新增：语言参数，默认中文（从表单获取）
 ):
-    if not ImageTextExtractor:
-        raise HTTPException(status_code=501, detail="OCR 模块缺失")
-
     content = await file.read()
-
-    # 使用异步工厂方法创建实例（从数据库加载配置）
-    try:
-        from src.database.connection import AsyncSessionLocal
-        async with AsyncSessionLocal() as db:
-            extractor = await ImageTextExtractor.create_async(db)
-    except Exception as e:
-        print(f"[Warning] 数据库配置加载失败，使用 .env: {e}")
-        extractor = ImageTextExtractor()
+    if not content:
+        raise HTTPException(status_code=400, detail="图片文件为空")
 
     try:
-        text, model = extractor.extract_text(content, file.content_type, language=language)
-        return {"text": text, "model": model}
-    except NotDeclarationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        filename = file.filename or "declaration.png"
+        mime_type = file.content_type or "application/octet-stream"
+        files = {"file": (filename, content, mime_type)}
+        data = {"return_format": "md"}
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(TABLE_OCR_URL, files=files, data=data)
+            response.raise_for_status()
+            payload = response.json()
+
+        if not payload.get("success", False):
+            error_detail = payload.get("message") or payload.get("detail") or "图片表格识别失败"
+            raise HTTPException(status_code=502, detail=error_detail)
+
+        text = payload.get("context") or payload.get("content") or ""
+        if not text:
+            raise HTTPException(status_code=502, detail="图片表格识别结果为空")
+
+        return {
+            "text": text,
+            "model": payload.get("model") or "table-ocr",
+            "format": payload.get("format") or "md",
+            "session_id": payload.get("session_id"),
+        }
+    except HTTPException:
+        raise
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text[:500] if e.response is not None else str(e)
+        raise HTTPException(status_code=502, detail=f"图片表格识别服务返回错误: {detail}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"图片表格识别服务连接失败: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

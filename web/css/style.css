@@ -11,6 +11,54 @@ body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahom
 .neon-border { box-shadow: 0 0 10px rgba(56, 189, 248, 0.3); transition: all 0.3s ease; border: 1px solid rgba(56, 189, 248, 0.5); }
 .focus-neon:focus-within { box-shadow: 0 0 15px rgba(56, 189, 248, 0.4); border-color: #38bdf8; }
 
+/* Markdown 预览 */
+.markdown-preview {
+    line-height: 1.65;
+    word-break: break-word;
+}
+
+.markdown-preview p,
+.markdown-preview ul,
+.markdown-preview ol,
+.markdown-preview table,
+.markdown-preview blockquote {
+    margin-bottom: 0.75rem;
+}
+
+.markdown-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    display: block;
+    overflow-x: auto;
+    border: 1px solid rgba(100, 116, 139, 0.7);
+    border-radius: 6px;
+}
+
+.markdown-preview th,
+.markdown-preview td {
+    border: 1px solid rgba(100, 116, 139, 0.65);
+    padding: 0.45rem 0.55rem;
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+.markdown-preview th,
+.markdown-preview thead td {
+    background: rgba(15, 23, 42, 0.9);
+    color: #67e8f9;
+    font-weight: 600;
+}
+
+.markdown-preview tbody tr:nth-child(even) {
+    background: rgba(30, 41, 59, 0.45);
+}
+
+.markdown-preview img {
+    max-width: 100%;
+    border-radius: 6px;
+    border: 1px solid rgba(100, 116, 139, 0.5);
+}
+
 /* 侧边栏激活态 */
 .nav-active { background-color: #1e293b; color: #38bdf8; border-left: 3px solid #38bdf8; }
 

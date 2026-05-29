@@ -15,7 +15,109 @@ const SAMPLES = {
 };
 
 function loadSample(key) {
-    document.getElementById('rawDataInput').value = SAMPLES[key] || "";
+    setRawDataValue(SAMPLES[key] || "");
+}
+
+function setRawDataValue(value) {
+    const textarea = document.getElementById('rawDataInput');
+    if (!textarea) return;
+    textarea.value = value;
+    renderRawDataPreview();
+}
+
+function sanitizeMarkdownHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    template.content.querySelectorAll('script, iframe, object, embed, link, meta').forEach(el => el.remove());
+    template.content.querySelectorAll('*').forEach(el => {
+        [...el.attributes].forEach(attr => {
+            const name = attr.name.toLowerCase();
+            const value = attr.value.trim().toLowerCase();
+            if (name.startsWith('on') || value.startsWith('javascript:')) {
+                el.removeAttribute(attr.name);
+            }
+        });
+    });
+    return template.innerHTML;
+}
+
+function renderRawDataPreview() {
+    const textarea = document.getElementById('rawDataInput');
+    const preview = document.getElementById('rawDataPreview');
+    if (!textarea || !preview) return;
+
+    const raw = textarea.value || '';
+    if (window.marked) {
+        preview.innerHTML = sanitizeMarkdownHtml(marked.parse(raw, { breaks: true }));
+    } else {
+        preview.textContent = raw;
+    }
+}
+
+function switchRawDataMode(mode) {
+    const textarea = document.getElementById('rawDataInput');
+    const preview = document.getElementById('rawDataPreview');
+    const editTab = document.getElementById('rawDataEditTab');
+    const previewTab = document.getElementById('rawDataPreviewTab');
+    if (!textarea || !preview || !editTab || !previewTab) return;
+
+    const isPreview = mode === 'preview';
+    if (isPreview) {
+        renderRawDataPreview();
+    }
+    textarea.classList.toggle('hidden', isPreview);
+    preview.classList.toggle('hidden', !isPreview);
+
+    editTab.classList.toggle('active', !isPreview);
+    editTab.classList.toggle('text-cyan-300', !isPreview);
+    editTab.classList.toggle('bg-cyan-500/10', !isPreview);
+    editTab.classList.toggle('border-cyan-500/40', !isPreview);
+    editTab.classList.toggle('text-slate-400', isPreview);
+    editTab.classList.toggle('border-transparent', isPreview);
+
+    previewTab.classList.toggle('active', isPreview);
+    previewTab.classList.toggle('text-cyan-300', isPreview);
+    previewTab.classList.toggle('bg-cyan-500/10', isPreview);
+    previewTab.classList.toggle('border-cyan-500/40', isPreview);
+    previewTab.classList.toggle('text-slate-400', !isPreview);
+    previewTab.classList.toggle('border-transparent', !isPreview);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const textarea = document.getElementById('rawDataInput');
+    if (textarea) {
+        textarea.addEventListener('input', renderRawDataPreview);
+    }
+});
+
+let imagePreviewObjectUrl = null;
+
+function handleImageSelection(input) {
+    const file = input.files && input.files[0];
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const previewWrap = document.getElementById('imagePreviewWrap');
+    const preview = document.getElementById('imagePreview');
+
+    if (imagePreviewObjectUrl) {
+        URL.revokeObjectURL(imagePreviewObjectUrl);
+        imagePreviewObjectUrl = null;
+    }
+
+    if (fileNameDisplay) {
+        fileNameDisplay.innerText = file ? file.name : t('select_image');
+    }
+
+    if (!previewWrap || !preview) return;
+
+    if (!file) {
+        preview.removeAttribute('src');
+        previewWrap.classList.add('hidden');
+        return;
+    }
+
+    imagePreviewObjectUrl = URL.createObjectURL(file);
+    preview.src = imagePreviewObjectUrl;
+    previewWrap.classList.remove('hidden');
 }
 
 async function searchDeclaration() {
@@ -27,7 +129,7 @@ async function searchDeclaration() {
         const res = await fetch(QUERY_URL + id);
         if (res.ok) {
             const json = await res.json();
-            document.getElementById('rawDataInput').value = json.text;
+            setRawDataValue(json.text);
         } else {
             alert(t('no_data_found'));
         }
@@ -459,7 +561,8 @@ async function analyzeImage() {
 
         // 填入文本框
         const textarea = document.getElementById('rawDataInput');
-        textarea.value = resJson.text || '';
+        setRawDataValue(resJson.text || '');
+        switchRawDataMode('preview');
 
         // 视觉反馈 (高亮闪烁)
         textarea.parentElement.classList.add('neon-border');
