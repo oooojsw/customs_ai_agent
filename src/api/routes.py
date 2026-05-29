@@ -142,7 +142,7 @@ async def generate_compliance_report(body: ReportRequest, req: Request):
 @router.post("/analyze_image")
 async def analyze_declaration_image(
     file: UploadFile = File(...),
-    language: str = "zh"  # 新增：语言参数，默认中文
+    language: str = "zh"  # 新增：语言参数，默认中文（从表单获取）
 ):
     if not ImageTextExtractor:
         raise HTTPException(status_code=501, detail="OCR 模块缺失")
