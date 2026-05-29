@@ -19,7 +19,7 @@ try:
 except ImportError:
     KnowledgeBase = None
     KB_AVAILABLE = False
-    print("⚠️ [System] KnowledgeBase 模块未找到，将以无知识库模式运行")
+    print("[System] KnowledgeBase module not found, running without knowledge base")
 
 # ==================== AI 决策系统数据结构 ====================
 

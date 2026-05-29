@@ -16,7 +16,9 @@ class ConfigLoader:
         print(f"[Config] Loading config file: {self.ENV_PATH}")
 
         if self.ENV_PATH.exists():
-            load_dotenv(dotenv_path=self.ENV_PATH, override=True) # override=True 强制覆盖系统变量
+            # ✅ 修复：不使用 override=True，避免污染 os.environ
+            # 这样可以防止代理环境变量干扰 MCP 连接
+            load_dotenv(dotenv_path=self.ENV_PATH, override=False)
         else:
             print(f"[Config] Warning: .env file not found, using system environment variables")
 

@@ -1,9 +1,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.future import select
 from src.database.models import AuditTask, AuditDetail, BatchTask, BatchItem, UserLLMConfig
 from datetime import datetime
 from typing import Optional
 import uuid
+import logging
+
+# 设置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("DB_DEBUG")
 
 class AuditRepository:
     """
@@ -180,7 +186,7 @@ class BatchRepository:
 
 
 class LLMConfigRepository:
-    """用户 LLM 配置仓库（支持多厂商配置）"""
+    """用户 LLM 配置仓库（支持多厂商配置 - 带调试日志版）"""
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -191,59 +197,98 @@ class LLMConfigRepository:
             UserLLMConfig.is_enabled == True
         ).order_by(UserLLMConfig.updated_at.desc()).limit(1)
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        config = result.scalar_one_or_none()
+
+        if config:
+            logger.info(f"[LLM Config] 当前激活: Provider={config.provider}, ID={config.id}")
+        else:
+            logger.info("[LLM Config] 未找到激活配置")
+
+        return config
 
     async def get_config_by_provider(self, provider: str) -> Optional[UserLLMConfig]:
-        """获取指定厂商的配置"""
+        """获取指定厂商的配置（最新一条）"""
+        target_provider = provider.strip().lower()
+
         stmt = select(UserLLMConfig).where(
-            UserLLMConfig.provider == provider
+            UserLLMConfig.provider == target_provider
         ).order_by(UserLLMConfig.updated_at.desc()).limit(1)
+
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def get_all_configs(self) -> list:
-        """获取所有厂商的配置"""
         stmt = select(UserLLMConfig).order_by(UserLLMConfig.provider)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     async def save_config(self, config_data: dict) -> UserLLMConfig:
-        """保存或更新指定厂商的配置（不影响其他厂商配置）"""
-        provider = config_data['provider']
+        """
+        保存配置（最终稳定版）
+        核心逻辑：
+        1. 状态互斥：先禁用全库，确保唯一性。
+        2. 时间锚定：显式更新 updated_at，防止排序混乱。
+        3. 空值防御：禁止空字符串覆盖已有 Key。
+        """
+        provider = config_data['provider'].strip().lower()
+        is_enable_action = config_data.get('is_enabled', True)
 
-        # 查找是否已有该provider的配置
-        existing = await self.get_config_by_provider(provider)
+        logger.info(f"[LLM Config] 保存配置: Provider={provider}, Enabled={is_enable_action}")
 
-        if existing:
-            # 更新现有配置
-            existing.api_key = config_data['api_key']
-            existing.base_url = config_data['base_url']
-            existing.model_name = config_data['model_name']
-            existing.api_version = config_data.get('api_version')
-            existing.temperature = config_data.get('temperature', 0.3)
-            existing.test_status = 'never'
-            # 使用前端传入的 is_enabled 值，而不是强制设为 True
-            existing.is_enabled = config_data.get('is_enabled', True)
-            await self.db.commit()
-            await self.db.refresh(existing)
-            return existing
-        else:
-            # 创建新配置（先禁用其他配置，保持只有一个启用）
+        # 1.【关键】状态互斥：如果要启用当前配置，先将全库所有配置设为 Disabled
+        if is_enable_action:
             await self.disable_all_configs()
 
+        # 2. 获取现有记录
+        existing = await self.get_config_by_provider(provider)
+        new_api_key = config_data.get('api_key', '').strip()
+
+        if existing:
+            # === 更新现有记录 ===
+
+            # 【关键】智能更新 Key：只有当用户填了新 Key 时才更新，防止前端传空值覆盖
+            if new_api_key:
+                logger.info(f"[LLM Config] 更新 API Key for {provider}")
+                existing.api_key = new_api_key
+            else:
+                logger.info(f"[LLM Config] 保留原 API Key for {provider} (输入为空)")
+
+            # 更新其他字段
+            if config_data.get('base_url'): existing.base_url = config_data['base_url']
+            if config_data.get('model_name'): existing.model_name = config_data['model_name']
+            if config_data.get('api_version') is not None: existing.api_version = config_data['api_version']
+
+            existing.temperature = config_data.get('temperature', 0.3)
+            existing.is_enabled = is_enable_action
+
+            # 【核心修复】强制刷新时间戳
+            # 这保证了当你切回这个供应商时，它永远排在查询结果的第一位
+            existing.updated_at = datetime.now()
+
+            await self.db.commit()
+            await self.db.refresh(existing)
+            logger.info(f"[LLM Config] ✓ 配置已更新: ID={existing.id}")
+            return existing
+
+        else:
+            # === 创建新记录 ===
+            logger.info(f"[LLM Config] 创建新配置 for {provider}")
             new_config = UserLLMConfig(
                 provider=provider,
-                is_enabled=config_data.get('is_enabled', True),  # 使用前端传入的 is_enabled 值
-                api_key=config_data['api_key'],
-                base_url=config_data['base_url'],
-                model_name=config_data['model_name'],
+                is_enabled=is_enable_action,
+                api_key=new_api_key,
+                base_url=config_data.get('base_url', ''),
+                model_name=config_data.get('model_name', ''),
                 api_version=config_data.get('api_version'),
                 temperature=config_data.get('temperature', 0.3),
-                test_status='never'
+                test_status='never',
+                created_at=datetime.now(),
+                updated_at=datetime.now()
             )
             self.db.add(new_config)
             await self.db.commit()
             await self.db.refresh(new_config)
+            logger.info(f"[LLM Config] ✓ 新配置已创建: ID={new_config.id}")
             return new_config
 
     async def activate_provider(self, provider: str) -> Optional[UserLLMConfig]:
@@ -266,10 +311,17 @@ class LLMConfigRepository:
         """禁用所有配置"""
         stmt = select(UserLLMConfig).where(UserLLMConfig.is_enabled == True)
         result = await self.db.execute(stmt)
-        configs = result.scalars().all()
-        for config in configs:
-            config.is_enabled = False
+        active_configs = result.scalars().all()
+
+        if not active_configs:
+            return
+
+        for conf in active_configs:
+            conf.is_enabled = False
+            conf.updated_at = datetime.now()  # 强制刷新时间戳
+
         await self.db.commit()
+        logger.info(f"[LLM Config] 禁用了 {len(active_configs)} 个配置")
 
     async def reset_to_env(self):
         """重置为 .env 配置（禁用所有用户配置）"""

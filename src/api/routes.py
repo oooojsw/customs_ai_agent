@@ -744,8 +744,18 @@ async def reload_llm_config(request: Request):
         from src.services.chat_agent import CustomsChatAgent
         from src.services.report_agent import ComplianceReporter
 
-        # 销毁旧实例 (Python GC 会处理，但显式替换引用)
-        request.app.state.agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
+        # 销毁旧实例并创建新实例
+        old_agent = getattr(request.app.state, "agent", None)
+        if old_agent and hasattr(old_agent, 'shutdown'):
+            try:
+                await old_agent.shutdown()
+            except Exception as e:
+                print(f"[Reload] 关闭旧Agent失败: {e}")
+
+        new_agent = CustomsChatAgent(kb=kb, llm_config=llm_config)
+        await new_agent.initialize_mcp_tools()
+        request.app.state.agent = new_agent
+
         request.app.state.reporter = ComplianceReporter(kb=kb, llm_config=llm_config)
 
         print(f"🔄 [System] 系统配置热重载完成。当前模式: {llm_config.get('source')} | 厂商: {llm_config.get('provider', 'deepseek')}")

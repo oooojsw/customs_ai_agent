@@ -8,8 +8,16 @@ from pathlib import Path
 
 # --- 1. 环境策略设置 (必须在导入任何异步库前) ---
 if platform.system() == 'Windows':
-    # 强制使用 SelectorEventLoop 解决 httpx 代理/SSL 冲突
+    # ✅ 使用 SelectorEventLoop 支持 MCP stdio 通信
+    # 同时在 executor 中初始化 KnowledgeBase 避免阻塞
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# --- 1.5. 清理代理环境变量（防止干扰 MCP 连接） ---
+# 注意：必须在导入 src.config.loader 之前清理，因为 loader 会设置代理
+for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+    if proxy_var in os.environ:
+        print(f"[MCP Fix] 移除代理环境变量: {proxy_var}")
+        del os.environ[proxy_var]
 
 # --- 2. 路径初始化 (确保项目根目录在首位) ---
 current_file_path = Path(__file__).resolve()
@@ -94,16 +102,23 @@ async def lifespan(app: FastAPI):
     try:
         from src.services.knowledge_base import KnowledgeBase
         print("⚙️ [System] 正在初始化知识库（单例，全局共享）...")
-        app.state.kb = KnowledgeBase()  # ← 只创建一次，所有Agent共享
+        
+        # ✅ 在 executor 中初始化，避免阻塞事件循环
+        loop = asyncio.get_event_loop()
+        app.state.kb = await loop.run_in_executor(None, KnowledgeBase)
+        
         print("✅ [System] 知识库初始化完成")
     except Exception as e:
         print(f"❌ [System] 知识库初始化失败: {e}")
         app.state.kb = None
 
     # 初始化功能二：对话 Agent（传入全局kb实例 + llm配置）
+    # 使用 Skill + MCP 双系统架构：先创建实例，再异步加载 MCP 工具
     try:
-        app.state.agent = CustomsChatAgent(kb=app.state.kb, llm_config=llm_config)
-        print("✅ [System] 对话引擎（功能二）就绪")
+        agent = CustomsChatAgent(kb=app.state.kb, llm_config=llm_config)
+        await agent.initialize_mcp_tools()
+        app.state.agent = agent
+        print("✅ [System] 对话引擎（Skill + MCP 双系统）就绪")
     except Exception as e:
         print(f"❌ [System] 对话引擎初始化失败: {e}")
         app.state.agent = None
@@ -141,9 +156,17 @@ async def lifespan(app: FastAPI):
     yield
     print("\n🛑 [System] 服务正在关闭...")
 
+    # 优雅停机：关闭 MCP 桥接器
+    if getattr(app.state, 'agent', None):
+        try:
+            await app.state.agent.shutdown()
+            print("✅ [System] MCP 桥接器已关闭")
+        except Exception as e:
+            print(f"⚠️ [System] MCP 桥接器关闭失败: {e}")
+
 app = FastAPI(
     title="Customs AI Agent", 
-    version="3.0 Pro", 
+    version="3.1.0 (Skill + MCP)", 
     lifespan=lifespan
 )
 
