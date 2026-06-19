@@ -36,6 +36,7 @@ class AgentRunService:
         output_manager: OutputManager | None = None,
         callback_client: CompletionCallbackClient | None = None,
         heartbeat_seconds: float = 20.0,
+        cancel_grace_seconds: float = 10.0,
     ) -> None:
         self.store = store or InMemoryRunStore()
         self.adapters = adapters or {
@@ -46,6 +47,7 @@ class AgentRunService:
         self.output_manager = output_manager
         self.callback_client = callback_client
         self.heartbeat_seconds = heartbeat_seconds
+        self.cancel_grace_seconds = cancel_grace_seconds
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._session_versions: dict[tuple[str, str], int] = {}
@@ -96,11 +98,15 @@ class AgentRunService:
         )
 
     async def cancel_run(self, run_id: str) -> RunSnapshot:
-        snapshot = await self.store.cancel_with_event(run_id)
+        await self.store.cancel_with_event(run_id)
         task = self._tasks.get(run_id)
         if task and not task.done():
             task.cancel()
-        return snapshot
+            try:
+                await asyncio.wait_for(task, timeout=self.cancel_grace_seconds)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        return await self.store.get(run_id)
 
     async def _execute_run(
         self,

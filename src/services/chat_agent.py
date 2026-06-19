@@ -823,22 +823,26 @@ create a concise markdown note proving the OpenCode child agent wrote it, save i
                         stderr=asyncio.subprocess.PIPE,
                     )
                     base_url = f"http://127.0.0.1:{port}"
-                    async with httpx.AsyncClient(timeout=2.0) as client:
-                        for _ in range(40):
-                            if proc.returncode is not None:
-                                stderr = await proc.stderr.read() if proc.stderr else b""
-                                last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
-                                break
-                            try:
-                                response = await client.get(
-                                    f"{base_url}/session/status",
-                                    params={"directory": project_root},
-                                )
-                                if response.status_code < 500:
-                                    return proc, base_url
-                            except Exception as exc:
-                                last_error = str(exc)
-                            await asyncio.sleep(0.25)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            for _ in range(40):
+                                if proc.returncode is not None:
+                                    stderr = await proc.stderr.read() if proc.stderr else b""
+                                    last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
+                                    break
+                                try:
+                                    response = await client.get(
+                                        f"{base_url}/session/status",
+                                        params={"directory": project_root},
+                                    )
+                                    if response.status_code < 500:
+                                        return proc, base_url
+                                except Exception as exc:
+                                    last_error = str(exc)
+                                await asyncio.sleep(0.25)
+                    except asyncio.CancelledError:
+                        await stop_opencode_process(proc)
+                        raise
                     await stop_opencode_process(proc)
                 raise RuntimeError(f"failed to start opencode server: {last_error}")
 

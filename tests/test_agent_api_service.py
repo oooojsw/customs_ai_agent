@@ -44,6 +44,19 @@ class SlowAdapter:
         return AdapterResult(final_answer="不应完成")
 
 
+class CleanupAwareAdapter:
+    def __init__(self):
+        self.cleaned = False
+
+    async def execute(self, request, app, emitter, context):
+        try:
+            await asyncio.sleep(60)
+            return AdapterResult(final_answer="不应完成")
+        finally:
+            await asyncio.sleep(0)
+            self.cleaned = True
+
+
 async def wait_for_terminal(service: AgentRunService, run_id: str):
     for _ in range(200):
         snapshot = await service.store.get(run_id)
@@ -131,6 +144,27 @@ def test_cancel_emits_single_terminal_event():
         assert [event.event for event in terminal_events] == [
             EventType.AGENT_CANCELLED
         ]
+
+    asyncio.run(scenario())
+
+
+def test_cancel_waits_for_adapter_cleanup():
+    async def scenario():
+        adapter = CleanupAwareAdapter()
+        service = AgentRunService(
+            adapters={"chat": adapter},
+            heartbeat_seconds=60,
+            cancel_grace_seconds=1,
+        )
+        response = await service.create_run(
+            make_request(request_id="req-cancel-cleanup-001"), FastAPI()
+        )
+        await asyncio.sleep(0.01)
+
+        snapshot = await service.cancel_run(response.run_id)
+
+        assert snapshot.status == RunStatus.CANCELLED
+        assert adapter.cleaned is True
 
     asyncio.run(scenario())
 
