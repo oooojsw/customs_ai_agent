@@ -17,7 +17,7 @@
 <body class="h-screen flex">
 
     <!-- ================= 侧边导航栏 ================= -->
-    <nav class="w-16 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 z-20 gap-2 shrink-0 shadow-xl">
+    <nav id="appSidebar" class="w-16 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 z-20 gap-2 shrink-0 shadow-xl">
         <div class="mb-4 text-cyan-400 animate-pulse"><i class="fa-solid fa-shield-halved text-2xl"></i></div>
 
         <button onclick="switchModule('audit')" id="nav-audit" class="nav-active w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800">
@@ -29,14 +29,22 @@
         </button>
 
         <button onclick="switchModule('report')" id="nav-report" class="w-full h-16 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800">
-            <i class="fa-solid fa-file-signature text-xl mb-1"></i><span class="text-[10px]" data-i18n="nav_report">合规建议</span>
+            <i class="fa-solid fa-file-signature text-xl mb-1"></i><span class="text-[10px]" data-i18n="nav_report">合规审计</span>
+        </button>
+
+        <button type="button" onclick="setSidebarCollapsed(true)" class="mt-auto w-full h-10 flex items-center justify-center text-slate-500 hover:text-cyan-400 hover:bg-slate-800 transition" data-i18n-title="collapse_sidebar" title="收起侧边栏">
+            <i class="fa-solid fa-angles-left"></i>
         </button>
 
         <!-- 设置按钮 -->
-        <button onclick="toggleSettings()" class="mt-auto w-full h-14 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800 border-t border-slate-700">
+        <button onclick="toggleSettings()" class="w-full h-14 flex flex-col items-center justify-center text-slate-400 hover:text-cyan-400 transition-all hover:bg-slate-800 border-t border-slate-700">
             <i class="fa-solid fa-gear text-lg"></i><span class="text-[10px]" data-i18n="settings">设置</span>
         </button>
     </nav>
+
+    <button type="button" id="sidebarExpandBtn" onclick="setSidebarCollapsed(false)" class="hidden fixed left-2 top-4 z-30 w-10 h-10 bg-slate-900 border border-slate-700 text-cyan-400 items-center justify-center rounded shadow-lg hover:bg-slate-800 transition" data-i18n-title="expand_sidebar" title="展开侧边栏">
+        <i class="fa-solid fa-angles-right"></i>
+    </button>
 
     <!-- 语言切换弹窗 -->
     <div id="settingsModal" class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -50,7 +58,7 @@
             </div>
 
             <!-- 标签页导航 -->
-            <div class="flex border-b border-slate-700 px-2 gap-1 shrink-0">
+            <div class="flex border-b border-slate-700 px-2 gap-1 shrink-0 overflow-x-auto whitespace-nowrap">
                 <button onclick="switchTab('api')" id="tab-api" class="settings-tab active px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:text-cyan-400 transition" data-tab="api">
                     <i class="fa-solid fa-server mr-1"></i>API配置
                 </button>
@@ -62,6 +70,9 @@
                 </button>
                 <button onclick="switchTab('index')" id="tab-index" class="settings-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:text-cyan-400 transition" data-tab="index">
                     <i class="fa-solid fa-database mr-1"></i>索引重建
+                </button>
+                <button onclick="switchTab('navigation')" id="tab-navigation" class="settings-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:text-cyan-400 transition" data-tab="navigation">
+                    <i class="fa-solid fa-bars mr-1"></i><span data-i18n="navigation_settings">导航</span>
                 </button>
                 <button onclick="switchTab('other')" id="tab-other" class="settings-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent hover:text-cyan-400 transition" data-tab="other">
                     <i class="fa-solid fa-sliders mr-1"></i>其他
@@ -356,7 +367,41 @@
                     </div>
                 </div>
 
-                <!-- ==================== 4. 其他区域（预留） ==================== -->
+                <!-- ==================== 4. 导航显示设置 ==================== -->
+                <div id="tab-content-navigation" class="tab-content hidden">
+                    <div class="space-y-5 p-2">
+                        <div class="border-b border-slate-700 pb-4">
+                            <h3 class="text-white text-base font-bold" data-i18n="navigation_settings">导航设置</h3>
+                            <p class="text-slate-400 text-xs mt-1" data-i18n="navigation_settings_desc">选择左侧侧边栏显示的业务功能。</p>
+                        </div>
+
+                        <div class="divide-y divide-slate-700 border-y border-slate-700">
+                            <div class="flex items-center justify-between gap-6 py-4">
+                                <div class="min-w-0">
+                                    <div class="text-sm font-medium text-slate-100" data-i18n="show_audit_nav">显示“审单”</div>
+                                    <div class="text-xs text-slate-400 mt-1" data-i18n="show_audit_nav_desc">控制左侧审单入口，不影响后端审单能力。</div>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input type="checkbox" id="showAuditNavToggle" class="sr-only peer" onchange="setFeatureNavigation('audit', this.checked)">
+                                    <span class="w-11 h-6 bg-slate-600 rounded-full peer peer-checked:bg-cyan-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-5 after:h-5 after:bg-white after:rounded-full after:transition-transform peer-checked:after:translate-x-full"></span>
+                                </label>
+                            </div>
+
+                            <div class="flex items-center justify-between gap-6 py-4">
+                                <div class="min-w-0">
+                                    <div class="text-sm font-medium text-slate-100" data-i18n="show_report_nav">显示“合规审计”</div>
+                                    <div class="text-xs text-slate-400 mt-1" data-i18n="show_report_nav_desc">控制左侧合规审计入口，不影响智能体报告工具。</div>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                                    <input type="checkbox" id="showReportNavToggle" class="sr-only peer" onchange="setFeatureNavigation('report', this.checked)">
+                                    <span class="w-11 h-6 bg-slate-600 rounded-full peer peer-checked:bg-cyan-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-5 after:h-5 after:bg-white after:rounded-full after:transition-transform peer-checked:after:translate-x-full"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ==================== 5. 其他区域（预留） ==================== -->
                 <div id="tab-content-other" class="tab-content hidden">
                     <div class="p-8 text-center space-y-4">
                         <i class="fa-solid fa-tools text-6xl text-slate-600 mb-4"></i>
@@ -396,7 +441,7 @@
                     <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div> <span data-i18n="status_online">系统在线</span>
                 </span>
                 <span class="flex items-center gap-2 text-blue-400 bg-blue-900/20 px-3 py-1 rounded-full border border-blue-800">
-                    <div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> <span data-i18n="model_info">deepseek-v3/r1</span>
+                    <div class="w-1.5 h-1.5 rounded-full bg-blue-500"></div> <span data-i18n="model_info">deepseek-v4</span>
                 </span>
             </div>
         </header>
@@ -520,10 +565,29 @@
             </div>
 
             <div class="bg-slate-800/90 backdrop-blur border-t border-slate-700 p-4 shrink-0">
-                <div class="max-w-4xl mx-auto flex gap-3">
-                    <textarea id="chatInput" rows="1" class="flex-1 bg-slate-900 border border-slate-600 rounded-lg p-3 text-sm text-white focus:border-cyan-500 focus:outline-none resize-none" data-i18n-placeholder="chat_placeholder" placeholder="请输入问题..."
-                    onkeydown="if(event.keyCode==13 && !event.shiftKey) { event.preventDefault(); sendMessage(); }"></textarea>
-                    <button onclick="sendMessage()" id="sendBtn" class="w-12 h-10 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg flex items-center justify-center transition"><i class="fa-solid fa-paper-plane"></i></button>
+                <div class="max-w-4xl mx-auto">
+                    <!-- 聊天图片预览条（选中图片后显示，可关闭） -->
+                    <div id="chatImagePreviewBar" class="hidden mb-2 flex items-center gap-2 bg-slate-900/70 border border-slate-700 rounded-lg p-2">
+                        <img id="chatImagePreviewImg" class="h-12 w-12 object-cover rounded border border-slate-600" alt="预览" />
+                        <div class="flex-1 min-w-0">
+                            <div id="chatImagePreviewName" class="text-xs text-slate-300 truncate"></div>
+                            <div class="text-[10px] text-cyan-400 mt-0.5" data-i18n="chat_image_will_ocr">将随消息一起自动 OCR 识别</div>
+                        </div>
+                        <button type="button" id="chatImageRemoveBtn" onclick="clearChatImage()" class="text-slate-400 hover:text-red-400 transition px-2" title="移除图片">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                    <div class="flex gap-3 items-end">
+                        <!-- 图片上传按钮（隐藏 input + 触发按钮） -->
+                        <input type="file" id="chatImageInput" accept="image/*" class="hidden" onchange="handleChatImageSelection(this)" />
+                        <button type="button" onclick="document.getElementById('chatImageInput').click()" id="chatImageBtn" class="w-12 h-10 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg flex items-center justify-center transition shrink-0" data-i18n-title="chat_image_upload" title="上传图片（自动 OCR）">
+                            <i class="fa-solid fa-image"></i>
+                        </button>
+                        <textarea id="chatInput" rows="1" class="flex-1 bg-slate-900 border border-slate-600 rounded-lg p-3 text-sm text-white focus:border-cyan-500 focus:outline-none resize-none" data-i18n-placeholder="chat_placeholder" placeholder="请输入问题..."
+                        onkeydown="if(event.keyCode==13 && !event.shiftKey) { event.preventDefault(); sendMessage(); }"></textarea>
+                        <button type="button" onclick="sendMessage()" id="sendBtn" class="w-12 h-10 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg flex items-center justify-center transition" data-i18n-title="chat_send" title="发送"><i class="fa-solid fa-paper-plane"></i></button>
+                        <button type="button" onclick="stopChatAgent()" id="chatStopBtn" class="hidden w-12 h-10 bg-red-600 hover:bg-red-500 text-white rounded-lg items-center justify-center transition" data-i18n-title="chat_stop" title="停止智能体"><i class="fa-solid fa-stop"></i></button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -634,11 +698,11 @@
     </div>
 
     <!-- 脚本引入顺序很重要 -->
-    <script src="js/i18n.js"></script>
+    <script src="js/i18n.js?v=3.0.4-navigation"></script>
     <script src="js/config.js?v=3.0.3"></script>
-    <script src="js/app.js?v=3.0.3"></script>
+    <script src="js/app.js?v=3.0.5-navigation-defaults"></script>
     <script src="js/audit.js?v=3.0.4-md-preview"></script>
-    <script src="js/chat.js?v=3.0.3"></script>
+    <script src="js/chat.js?v=3.0.5-agent-cancel"></script>
     <script src="js/report.js?v=3.0.3"></script>
     <script src="js/index_manager.js?v=3.0.3"></script>
     <script src="js/llm_config.js?v=3.3.4-fix-syntax"></script>

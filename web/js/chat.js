@@ -5,6 +5,159 @@
 let isUserScrolling = false;
 let scrollTimeout = null;
 
+// ==================== 聊天图片上传（层次①：选图→OCR→拼 message） ====================
+// 暂存用户选中的图片文件，发送时自动 OCR
+let pendingChatImage = null;
+let activeChatRun = null;
+let chatRequestStarting = false;
+let chatCancellationPending = false;
+
+function setChatButtonState(state) {
+    const sendBtn = document.getElementById('sendBtn');
+    const stopBtn = document.getElementById('chatStopBtn');
+    if (!sendBtn || !stopBtn) return;
+
+    if (state === 'running' || state === 'stopping') {
+        sendBtn.classList.add('hidden');
+        stopBtn.classList.remove('hidden');
+        stopBtn.classList.add('flex');
+        stopBtn.disabled = state === 'stopping';
+        stopBtn.title = state === 'stopping' ? t('chat_stopping') : t('chat_stop');
+        stopBtn.innerHTML = state === 'stopping'
+            ? '<i class="fa-solid fa-spinner fa-spin"></i>'
+            : '<i class="fa-solid fa-stop"></i>';
+    } else {
+        stopBtn.classList.add('hidden');
+        stopBtn.classList.remove('flex');
+        stopBtn.disabled = false;
+        sendBtn.classList.remove('hidden');
+        sendBtn.disabled = state === 'starting';
+        sendBtn.title = t('chat_send');
+        sendBtn.innerHTML = state === 'starting'
+            ? '<i class="fa-solid fa-spinner fa-spin"></i>'
+            : '<i class="fa-solid fa-paper-plane"></i>';
+    }
+}
+
+async function requestChatAgentCancellation(runId, requestId) {
+    const response = await fetch(`${AGENT_RUNS_URL}/${encodeURIComponent(runId)}/cancel`, {
+        method: 'POST',
+        headers: {
+            'X-Request-ID': requestId,
+            'X-Tenant-ID': TENANT_ID,
+            'X-Service-Name': 'customs-web-demo'
+        }
+    });
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error?.message || payload.detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+}
+
+async function stopChatAgent() {
+    const run = activeChatRun;
+    if (!run || run.cancellationRequested) return;
+
+    run.cancellationRequested = true;
+    chatCancellationPending = true;
+    if (run.streamController) run.streamController.abort();
+    setChatButtonState('stopping');
+    try {
+        await requestChatAgentCancellation(run.runId, run.requestId);
+    } catch (error) {
+        console.error('[Agent V1 cancel failed]', error);
+    } finally {
+        chatCancellationPending = false;
+        setChatButtonState('idle');
+    }
+}
+
+/**
+ * 聊天输入区：用户从 input[type=file] 选完图片后触发
+ * 只展示预览 + 暂存文件，真正的 OCR 在 sendMessage 阶段才发请求
+ */
+function handleChatImageSelection(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+
+    // 大小保护：> 20MB 拒绝（与 audit 一致）
+    if (file.size > 20 * 1024 * 1024) {
+        alert(t('image_recognition_failed') + ' > 20MB');
+        input.value = '';
+        return;
+    }
+
+    pendingChatImage = file;
+
+    const bar = document.getElementById('chatImagePreviewBar');
+    const img = document.getElementById('chatImagePreviewImg');
+    const name = document.getElementById('chatImagePreviewName');
+    if (bar && img && name) {
+        if (img._objectUrl) {
+            URL.revokeObjectURL(img._objectUrl);
+        }
+        img._objectUrl = URL.createObjectURL(file);
+        img.src = img._objectUrl;
+        name.textContent = file.name;
+        bar.classList.remove('hidden');
+    }
+}
+
+/**
+ * 取消已选图片（X 按钮）
+ */
+function clearChatImage() {
+    pendingChatImage = null;
+    const bar = document.getElementById('chatImagePreviewBar');
+    const img = document.getElementById('chatImagePreviewImg');
+    const input = document.getElementById('chatImageInput');
+    if (img && img._objectUrl) {
+        URL.revokeObjectURL(img._objectUrl);
+        img._objectUrl = null;
+    }
+    if (img) img.src = '';
+    if (input) input.value = '';
+    if (bar) bar.classList.add('hidden');
+}
+
+/**
+ * 调用后端 /analyze_image 拿 OCR 文本
+ * 失败时抛出错误由 sendMessage 兜底
+ * 【关键】加 15s AbortController 超时：后端转发到慢上游时会卡 120s，前端不能跟它一起死
+ */
+async function ocrChatImage(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('language', window.currentLanguage || 'zh');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);  // 15s 超时
+
+    let response;
+    try {
+        response = await fetch(IMAGE_API_URL, {
+            method: 'POST',
+            body: fd,
+            signal: controller.signal
+        });
+    } catch (e) {
+        clearTimeout(timeoutId);
+        if (e.name === 'AbortError') {
+            throw new Error('OCR 服务响应超时（>15s），请稍后重试');
+        }
+        throw e;
+    }
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || t('recognition_error'));
+    }
+    const json = await response.json();
+    return (json && (json.text || json.content || json.context)) || '';
+}
+
 // 工具名称映射（显示名称）
 function getToolDisplayName(toolName) {
     const toolNames = {
@@ -37,17 +190,220 @@ function toggleToolResult(toolIdx) {
     }
 }
 
+function createAgentRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+        return `web-${window.crypto.randomUUID()}`;
+    }
+    return `web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function createChatAgentRun(message) {
+    const requestId = createAgentRequestId();
+    const response = await fetch(AGENT_RUNS_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Request-ID': requestId,
+            'X-Tenant-ID': TENANT_ID,
+            'X-Service-Name': 'customs-web-demo'
+        },
+        body: JSON.stringify({
+            request_id: requestId,
+            session: {
+                session_id: SESSION_ID,
+                user_id: USER_ID,
+                tenant_id: TENANT_ID
+            },
+            message: {
+                role: 'user',
+                content: message
+            },
+            language: window.currentLanguage || 'zh',
+            attachments: [],
+            business_context: {},
+            options: {
+                intent: 'auto',
+                response_mode: 'stream',
+                include_tool_trace: true,
+                include_structured_result: true,
+                output_file_policy: 'agent_temporary',
+                timeout_seconds: 600
+            }
+        })
+    });
+
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const messageText = payload.error?.message || payload.detail || `HTTP ${response.status}`;
+        throw new Error(messageText);
+    }
+    return response.json();
+}
+
+function parseAgentSseBlock(block) {
+    const dataLines = block
+        .split('\n')
+        .filter(line => line.startsWith('data:'))
+        .map(line => line.slice(5).trimStart());
+    if (!dataLines.length) return null;
+    return JSON.parse(dataLines.join('\n'));
+}
+
+function mapAgentEventToLegacyEvent(envelope) {
+    const eventData = envelope.data || {};
+    switch (envelope.event) {
+        case 'message_delta':
+            return { type: 'answer', content: eventData.content || '' };
+        case 'tool_started':
+            return {
+                type: 'tool_start',
+                tool_name: eventData.tool || 'unknown_tool',
+                display_name: eventData.display_name
+            };
+        case 'tool_finished':
+            return {
+                type: 'tool_end',
+                tool_name: eventData.tool || 'unknown_tool',
+                tool_result: eventData.summary || ''
+            };
+        case 'output_created':
+            return { type: 'output_created', output: eventData.output || eventData };
+        case 'warning':
+            return { type: 'warning', error: eventData.error || eventData };
+        case 'agent_failed':
+            return { type: 'error', error: eventData.error || {} };
+        case 'agent_cancelled':
+            return { type: 'cancelled' };
+        case 'agent_completed':
+            return { type: 'done', result: eventData };
+        default:
+            return null;
+    }
+}
+
+function appendAgentOutput(answerElement, output) {
+    if (!output) return;
+    const downloadUrl = output.download_url || output.agent_output_url;
+    if (!downloadUrl) return;
+
+    const container = document.createElement('div');
+    container.className = 'download-button-container';
+
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.className = 'download-button';
+    link.download = output.name || '';
+
+    const icon = document.createElement('i');
+    icon.className = output.kind === 'image'
+        ? 'fa-solid fa-image'
+        : 'fa-solid fa-file-arrow-down';
+
+    const label = document.createElement('span');
+    label.textContent = output.name || t('download_word');
+
+    link.appendChild(icon);
+    link.appendChild(label);
+    container.appendChild(link);
+    answerElement.appendChild(container);
+}
+
 async function sendMessage() {
     const input = document.getElementById('chatInput');
     const history = document.getElementById('chatHistory');
-    const msg = input.value.trim();
-    if (!msg) return;
+    const sendBtn = document.getElementById('sendBtn');
+    const imageBtn = document.getElementById('chatImageBtn');
+    if (activeChatRun || chatRequestStarting || chatCancellationPending) return;
+    chatRequestStarting = true;
+    setChatButtonState('starting');
+
+    let msg = input.value.trim();
+    if (!msg && !pendingChatImage) {
+        chatRequestStarting = false;
+        setChatButtonState('idle');
+        return;
+    }
+    const originalUserMsg = msg;
+    const hadChatImage = !!pendingChatImage;
 
     // 不重置工具索引，让全局递增，确保每轮对话的ID唯一
     toolResults.clear();
 
-    // User msg
-    history.innerHTML += `<div class="flex justify-end"><div class="chat-bubble chat-user">${msg}</div></div>`;
+    // ============ 层次①：有挂起图片时，先 OCR 再拼 message ============
+    let ocrText = '';
+    let ocrFailed = false;
+    if (pendingChatImage) {
+        // 锁住发送按钮 + 切换到"识别中"状态
+        sendBtn.disabled = true;
+        if (imageBtn) imageBtn.disabled = true;
+        const originalSendHtml = sendBtn.innerHTML;
+        sendBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        try {
+            ocrText = await ocrChatImage(pendingChatImage);
+            if (!ocrText) {
+                console.warn('[chat OCR empty]', t('chat_ocr_empty'));
+                ocrFailed = true;
+            }
+        } catch (e) {
+            console.error('[chat OCR failed]', e);
+            ocrFailed = true;
+            // OCR 失败：图片留在预览条让用户重试/移除，释放按钮让原文字消息照发
+            // 改用 console.error 而非 alert() — alert 是同步阻塞，会卡住后续代码
+        } finally {
+            sendBtn.disabled = false;
+            if (imageBtn) imageBtn.disabled = false;
+            sendBtn.innerHTML = originalSendHtml;
+        }
+        // OCR 成功：清掉预览条 + 释放按钮
+        if (ocrText) {
+            clearChatImage();
+        }
+    }
+
+    // 构造最终 message：原文本 + （可选）OCR 文本块
+    const ocrPrompt = t('chat_ocr_prompt_zh');
+    if (ocrText) {
+        if (msg) {
+            msg = `${msg}\n\n${ocrPrompt}\n${ocrText}`;
+        } else {
+            msg = `${ocrPrompt}\n${ocrText}`;
+        }
+    }
+
+    // OCR 失败时，在消息末尾追加一个轻量提示（让 Agent 也知道图没识别成功）
+    if (ocrFailed && pendingChatImage) {
+        const note = `[注意：用户上传了一张图片，但 OCR 识别服务暂不可用（图片未解析成功）。请基于用户输入的文字继续回答，必要时提示用户稍后重试。]`;
+        msg = msg ? `${msg}\n\n${note}` : note;
+    }
+
+    // OCR 失败时给一个非阻塞的轻量 toast 提示（不阻断 JS）
+    if (ocrFailed) {
+        try {
+            const toast = document.createElement('div');
+            toast.style.cssText = 'position:fixed;top:80px;right:20px;background:#7f1d1d;color:#fff;padding:10px 16px;border-radius:6px;z-index:9999;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+            toast.textContent = t('image_recognition_failed') + '（图片保留在预览条可重试）';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 5000);
+        } catch (_) {}
+    }
+
+    // User msg（气泡里展示的是用户原本输入 + 一个图片小角标）
+    const escapeHtml = (value) => value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    const userBubbleLines = (originalUserMsg || msg)
+        .split('\n')
+        .filter(line => line.length > 0)
+        .map(line => `<div>${escapeHtml(line)}</div>`)
+        .join('');
+    const attachedTag = hadChatImage
+        ? `<div class="text-[10px] text-cyan-300 mt-1 mb-1"><i class="fa-solid fa-image"></i> ${escapeHtml(t('chat_ocr_attached_tag'))}</div>`
+        : '';
+    let userBubbleHtml = `${userBubbleLines}${attachedTag}`;
+    history.innerHTML += `<div class="flex justify-end"><div class="chat-bubble chat-user">${userBubbleHtml}</div></div>`;
     input.value = '';
     scrollToBottom(history);
 
@@ -64,27 +420,56 @@ async function sendMessage() {
     history.appendChild(answerDiv);
 
     try {
-        const res = await fetch(CHAT_URL, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ message: msg, session_id: SESSION_ID, language: window.currentLanguage })
+        const run = await createChatAgentRun(msg);
+        const streamController = new AbortController();
+        activeChatRun = {
+            runId: run.run_id,
+            requestId: run.request_id,
+            cancellationRequested: false,
+            streamController
+        };
+        chatRequestStarting = false;
+        setChatButtonState('running');
+        const eventsUrl = new URL(run.events_url, AGENT_V1_BASE_URL).toString();
+        const res = await fetch(eventsUrl, {
+            method: 'GET',
+            signal: streamController.signal,
+            headers: {
+                'Accept': 'text/event-stream',
+                'X-Request-ID': run.request_id,
+                'X-Tenant-ID': TENANT_ID,
+                'X-Service-Name': 'customs-web-demo'
+            }
         });
+
+        if (!res.ok) {
+            const payload = await res.json().catch(() => ({}));
+            const messageText = payload.error?.message || payload.detail || `HTTP ${res.status}`;
+            throw new Error(messageText);
+        }
+        if (!res.body) {
+            throw new Error('浏览器未收到智能体事件流');
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         let currentContentBuffer = '';  // 当前累积的内容
         let lastContentDiv = null;  // 最后一个内容div
+        let hasDisplayedAnswer = false;
 
         while(true) {
             const {done, value} = await reader.read();
             if(done) break;
             buffer += decoder.decode(value, {stream: true});
-            const lines = buffer.split('\n\n');
-            buffer = lines.pop();
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop();
 
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    const data = JSON.parse(line.substring(6));
+            for (const block of blocks) {
+                const envelope = parseAgentSseBlock(block);
+                if (envelope) {
+                    const data = mapAgentEventToLegacyEvent(envelope);
+                    if (!data) continue;
 
                     // 隐藏思考状态
                     document.getElementById(thinkingId).style.display = 'none';
@@ -105,6 +490,7 @@ async function sendMessage() {
 
                         // 如果是废话，不显示；否则正常显示
                         if (!isWaste) {
+                            hasDisplayedAnswer = true;
                             currentContentBuffer += content;
                             // 更新或创建内容div
                             if (lastContentDiv) {
@@ -268,12 +654,55 @@ async function sendMessage() {
                                 scrollToBottom(history);
                             }
                         }
+                    } else if (data.type === 'output_created') {
+                        appendAgentOutput(document.getElementById(answerId), data.output);
+                        if (!isUserScrolling) {
+                            scrollToBottom(history);
+                        }
+                    } else if (data.type === 'warning') {
+                        console.warn('[Agent V1 warning]', data.error);
+                    } else if (data.type === 'error') {
+                        throw new Error(data.error.message || t('error'));
+                    } else if (data.type === 'cancelled') {
+                        const answerElement = document.getElementById(answerId);
+                        const cancelledDiv = document.createElement('div');
+                        cancelledDiv.className = 'ai-content text-slate-400';
+                        cancelledDiv.textContent = t('chat_cancelled');
+                        answerElement.appendChild(cancelledDiv);
+                        answerElement.querySelectorAll('.chat-tool-status.calling').forEach(element => {
+                            element.classList.remove('calling');
+                            element.classList.add('cancelled');
+                        });
+                    } else if (data.type === 'done') {
+                        const finalAnswer = data.result?.final_answer || '';
+                        if (!hasDisplayedAnswer && finalAnswer) {
+                            const contentDiv = document.createElement('div');
+                            contentDiv.className = 'ai-content';
+                            contentDiv.innerHTML = marked.parse(finalAnswer);
+                            document.getElementById(answerId).appendChild(contentDiv);
+                            hasDisplayedAnswer = true;
+                        }
                     }
                 }
             }
         }
     } catch(e) {
-        document.getElementById(thinkingId).innerHTML = `${t('error')}: ` + e;
+        const thinkingElement = document.getElementById(thinkingId);
+        if (e.name === 'AbortError' || activeChatRun?.cancellationRequested) {
+            thinkingElement.style.display = 'none';
+            answerDiv.classList.remove('hidden');
+            const cancelledDiv = document.createElement('div');
+            cancelledDiv.className = 'ai-content text-slate-400';
+            cancelledDiv.textContent = t('chat_cancelled');
+            document.getElementById(answerId).appendChild(cancelledDiv);
+        } else {
+            thinkingElement.style.display = '';
+            thinkingElement.innerHTML = `${t('error')}: ${e.message || e}`;
+        }
+    } finally {
+        chatRequestStarting = false;
+        activeChatRun = null;
+        if (!chatCancellationPending) setChatButtonState('idle');
     }
 }
 

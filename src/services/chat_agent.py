@@ -86,6 +86,31 @@ except ImportError as e:
 # 初始化内存检查点，用于维护多轮对话状态
 MEMORY = InMemorySaver()
 
+
+AGENT_TASK_GOVERNANCE_PROMPT = """
+【最高优先级：当前任务与工具调用边界】
+你是一个由用户目标驱动的通用智能体。系统向你暴露全部工具，是为了让你能够按需解决不同问题，
+并不表示每次请求都要调用全部工具，也不表示你可以自行扩展用户的任务范围。
+
+1. 以用户当前一轮明确提出的目标为准。先判断用户究竟要求你交付什么，再选择完成该目标所需的最少工具。
+2. 工具是可选能力，不是固定流程。不得因为工具可用、输入中出现相关字段，或历史会话曾使用某项能力，就自动调用它。
+3. 数据内容不等于用户意图。报关数据中出现 HS 编码、CIF、价格、币制、税率等字段，不代表用户要求计算税费；
+   出现法规名称不代表用户要求法规检索；出现完整报关单不代表用户要求生成报告或执行全流程。
+4. 用户只要求审单、审计或风险检查时，只执行审单所需操作。不得自行追加税费计算、报告生成、文件导出、
+   报关流程模拟或其他独立任务。审单结论可以指出价格或归类风险，但不得擅自计算具体税额。
+5. 只有用户明确要求计算关税、增值税、总税额、完税价格或税负时，才可调用税费计算技能。
+6. 只有用户明确要求查询法规、政策依据、法律条款，或者当前答案必须引用依据才能成立时，才可调用法规检索。
+   如果只是一般审单，不得把法规检索自动作为审单后的固定下一步。
+7. 只有用户明确要求生成报告、建议书或正式文档时，才可调用报告生成；只有用户明确要求下载、导出或保存文件时，
+   才可调用文件导出。报告生成完成后也不得自动导出，除非用户同时提出导出要求。
+8. 多工具串联只允许两种情况：用户明确提出多个交付目标；或者后一个工具是完成当前目标不可缺少的直接依赖。
+   不得以“可能有帮助”“更加全面”为理由扩展调用链。
+9. 达到用户当前目标后立即停止调用工具并回答。不要主动开启所谓完整流程、全面审查或附加分析。
+10. 如果用户目标存在会显著影响工具选择的歧义，先用一句简短问题确认；不要自行选择范围更大的任务。
+11. 当前轮明确指令高于历史会话中的任务。用户本轮说“只审单”“仅查询”或“不要计算”等限制时，必须严格执行。
+12. 固定工作流由专门的业务入口负责。除非用户明确要求完整流程，否则你不得在通用对话中自行模拟固定工作流。
+""".strip()
+
 class CustomsChatAgent:
     def __init__(self, kb=None, llm_config: dict = None):
         """
@@ -279,7 +304,10 @@ class CustomsChatAgent:
             name="audit_declaration",
             func=lambda x: "此工具仅支持异步环境运行", # 占位，防止初始化报错
             coroutine=audit_declaration_tool,      # 实际异步逻辑
-            description="全自动报关风险扫描工具。能检测要素完整性、敏感物项、价格逻辑、归类一致性及单证一致性。"
+            description=(
+                "报关风险审单工具，检测要素完整性、敏感物项、价格逻辑、归类一致性及单证一致性。"
+                "仅在用户明确要求审单、审计或风险检查时调用；该工具不负责计算具体税费、生成报告或导出文件。"
+            )
         ))
 
         # RAG 知识库检索工具
@@ -300,7 +328,10 @@ class CustomsChatAgent:
             self.tools.append(Tool(
                 name="search_customs_regulations",
                 func=retrieve_docs,
-                description="查询海关相关法规、政策文件、HS编码解释。遇到专业名词或法律疑问时必须使用。"
+                description=(
+                    "查询海关相关法规、政策文件和 HS 编码解释。仅在用户明确要求法规依据、政策查询、"
+                    "条款解释，或当前回答必须引用依据时调用；不得作为普通审单后的固定步骤。"
+                )
             ))
 
         # --- 4.5 初始化技能管理器 ---
@@ -792,22 +823,26 @@ create a concise markdown note proving the OpenCode child agent wrote it, save i
                         stderr=asyncio.subprocess.PIPE,
                     )
                     base_url = f"http://127.0.0.1:{port}"
-                    async with httpx.AsyncClient(timeout=2.0) as client:
-                        for _ in range(40):
-                            if proc.returncode is not None:
-                                stderr = await proc.stderr.read() if proc.stderr else b""
-                                last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
-                                break
-                            try:
-                                response = await client.get(
-                                    f"{base_url}/session/status",
-                                    params={"directory": project_root},
-                                )
-                                if response.status_code < 500:
-                                    return proc, base_url
-                            except Exception as exc:
-                                last_error = str(exc)
-                            await asyncio.sleep(0.25)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            for _ in range(40):
+                                if proc.returncode is not None:
+                                    stderr = await proc.stderr.read() if proc.stderr else b""
+                                    last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
+                                    break
+                                try:
+                                    response = await client.get(
+                                        f"{base_url}/session/status",
+                                        params={"directory": project_root},
+                                    )
+                                    if response.status_code < 500:
+                                        return proc, base_url
+                                except Exception as exc:
+                                    last_error = str(exc)
+                                await asyncio.sleep(0.25)
+                    except asyncio.CancelledError:
+                        await stop_opencode_process(proc)
+                        raise
                     await stop_opencode_process(proc)
                 raise RuntimeError(f"failed to start opencode server: {last_error}")
 
@@ -1307,10 +1342,12 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
         self.system_prompt_text = f"""
 你是一名智慧口岸AI专家，负责报关咨询和自动审单。
 
-【核心工作守则】
-1. 审计：用户粘贴报关单后，主动调用 `audit_declaration`。
-2. 咨询：法律疑问调用 `search_customs_regulations`。
-3. 协同：审单发现风险后，可检索法规条文来支撑你的解释。
+{AGENT_TASK_GOVERNANCE_PROMPT}
+
+【专业能力规则】
+1. 审单：用户明确要求审单、审计或风险检查时，调用 `audit_declaration`。
+2. 咨询：用户明确要求法规、政策或条款依据时，调用 `search_customs_regulations`。
+3. 协同：需要多项能力时，严格按照用户明确提出的交付目标选择工具，不得默认扩展为完整业务流程。
 4. 语言：严禁跳出用户当前使用的语言（中文或越南语）。
 
 {skills_section}

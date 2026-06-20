@@ -123,6 +123,11 @@ config/faiss_index_local/
 *.temp
 .tmp/
 temp/
+data/agent_runs/
+data/agent_outputs/
+data/agent_v1_runs.db
+data/agent_v1_runs.db-*
+data/pytest-temp-*/
 
 # 忽略测试覆盖率报告
 .coverage

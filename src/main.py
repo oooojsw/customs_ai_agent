@@ -181,6 +181,18 @@ app.add_middleware(
 
 app.include_router(api_router, prefix="/api/v1")
 
+# Mount the unified platform integration layer by default while keeping the
+# legacy routes available for the existing frontend.
+if settings.AGENT_V1_ENABLED:
+    from src.agent_api.middleware import AgentTraceMiddleware
+    from src.agent_api.routes import router as agent_api_router
+
+    app.add_middleware(AgentTraceMiddleware)
+    app.include_router(agent_api_router, prefix="/api/agent/v1")
+    print("✅ [System] Agent V1 integration API enabled: /api/agent/v1")
+else:
+    print("ℹ️ [System] Agent V1 integration API disabled (AGENT_V1_ENABLED=false)")
+
 # 挂载下载目录（功能三：深度研究工具导出文件）
 downloads_dir = project_root / "data" / "exports"
 if downloads_dir.exists():
