@@ -6,13 +6,13 @@ const translations = {
         language: '语言',
         nav_audit: '审单',
         nav_chat: '智能体',
-        nav_report: '合规建议',
+        nav_report: '合规审计',
 
         // Header
         system_title: '智能报关系统',
         system_subtitle: '智慧口岸自动化报关辅助决策系统 v3.0 Pro',
         status_online: '系统在线',
-        model_info: 'deepseek-v3/r1',
+        model_info: 'deepseek-4',
 
         // 审单模块
         audit_title: '单据研判',
@@ -34,6 +34,27 @@ const translations = {
         rag_connected: 'RAG 知识库已连接',
         ai_welcome: '👋 您好！我是海关智能体。我可以帮您调用各类工具，包括智能审单、法规检索等，为您提供专业的报关辅助服务。',
         chat_placeholder: '请输入问题...',
+        chat_send: '发送',
+        chat_stop: '停止智能体',
+        chat_stopping: '正在停止...',
+        chat_cancelled: '已停止智能体任务',
+        customs_process: '模拟报关流程',
+        navigation_settings: '导航',
+        navigation_settings_desc: '选择左侧侧边栏显示的业务功能。',
+        show_audit_nav: '显示“审单”',
+        show_audit_nav_desc: '控制左侧审单入口，不影响后端审单能力。',
+        show_report_nav: '显示“合规审计”',
+        show_report_nav_desc: '控制左侧合规审计入口，不影响智能体报告工具。',
+        collapse_sidebar: '收起侧边栏',
+        expand_sidebar: '展开侧边栏',
+
+        // 聊天图片上传 (层次①：上传图片后自动 OCR 拼到 message)
+        chat_image_upload: '上传图片（自动 OCR）',
+        chat_image_will_ocr: '将随消息一起自动 OCR 识别',
+        chat_ocr_in_progress: '正在识别图片...',
+        chat_ocr_empty: '图片识别结果为空',
+        chat_ocr_attached_tag: '已附图片（已自动 OCR）',
+        chat_ocr_prompt_zh: '[用户上传了一张图片，OCR 识别结果如下：]',
 
         // 工具调用状态
         tool_audit_declaration: '智能审单',
@@ -41,6 +62,7 @@ const translations = {
         tool_query_exchange_rate: '汇率查询',
         tool_calling: '正在调用工具',
         tool_call_done: '调用完毕',
+        tool_call_failed: '调用失败',
         download_word: '下载 Word 文档',
 
         // 报告模块
@@ -145,13 +167,13 @@ const translations = {
         language: 'Ngôn ngữ',
         nav_audit: 'Kiểm tra',
         nav_chat: 'Tác nhân thông minh',
-        nav_report: 'Đề xuất tuân thủ',
+        nav_report: 'Kiểm toán tuân thủ',
 
         // Header
         system_title: 'Hệ thống Hải quan Thông minh',
         system_subtitle: 'Hệ thống hỗ trợ quyết định khai báo hải quan tự động v3.0 Pro',
         status_online: 'Hệ thống trực tuyến',
-        model_info: 'deepseek-v3/r1',
+        model_info: 'deepseek-v4',
 
         // 审单模块
         audit_title: 'Phân tích chứng từ',
@@ -173,6 +195,27 @@ const translations = {
         rag_connected: 'Đã kết nối cơ sở kiến thức RAG',
         ai_welcome: '👋 Xin chào! Tôi là tác nhân thông minh hải quan. Tôi có thể giúp bạn gọi các công cụ khác nhau, bao gồm kiểm tra hải quan thông minh, tra cứu quy chế, v.v., để cung cấp dịch vụ hỗ trợ khai báo hải quan chuyên nghiệp.',
         chat_placeholder: 'Nhập câu hỏi...',
+        chat_send: 'Gửi',
+        chat_stop: 'Dừng tác nhân',
+        chat_stopping: 'Đang dừng...',
+        chat_cancelled: 'Đã dừng tác vụ tác nhân',
+        customs_process: 'Quy trình khai báo hải quan mô phỏng',
+        navigation_settings: 'Điều hướng',
+        navigation_settings_desc: 'Chọn các chức năng nghiệp vụ hiển thị trên thanh bên trái.',
+        show_audit_nav: 'Hiển thị “Kiểm tra”',
+        show_audit_nav_desc: 'Điều khiển lối vào kiểm tra, không ảnh hưởng đến năng lực phía máy chủ.',
+        show_report_nav: 'Hiển thị “Kiểm toán tuân thủ”',
+        show_report_nav_desc: 'Điều khiển lối vào đề xuất tuân thủ, không ảnh hưởng đến công cụ báo cáo.',
+        collapse_sidebar: 'Thu gọn thanh bên',
+        expand_sidebar: 'Mở rộng thanh bên',
+
+        // Tải ảnh lên cho chat (Cấp ①: tự động OCR rồi ghép vào message)
+        chat_image_upload: 'Tải ảnh lên (tự động OCR)',
+        chat_image_will_ocr: 'Sẽ tự động OCR cùng tin nhắn',
+        chat_ocr_in_progress: 'Đang nhận dạng hình ảnh...',
+        chat_ocr_empty: 'Kết quả nhận dạng hình ảnh trống',
+        chat_ocr_attached_tag: 'Đã đính kèm ảnh (đã OCR tự động)',
+        chat_ocr_prompt_zh: '[Người dùng đã tải lên một hình ảnh, kết quả OCR như sau:]',
 
         // 工具调用状态
         tool_audit_declaration: 'Kiểm tra hải quan',
@@ -180,6 +223,7 @@ const translations = {
         tool_query_exchange_rate: 'Tra cứu tỷ giá',
         tool_calling: 'Đang gọi công cụ',
         tool_call_done: 'Hoàn thành',
+        tool_call_failed: 'Thất bại',
         download_word: 'Tải xuống tài liệu Word',
 
         // 报告模块
@@ -334,6 +378,13 @@ function updatePageLanguage() {
     values.forEach(el => {
         const key = el.getAttribute('data-i18n-value');
         el.value = t(key);
+    });
+
+    // 更新 title 属性（用于图标按钮 hover 提示）
+    const titles = document.querySelectorAll('[data-i18n-title]');
+    titles.forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        el.title = t(key);
     });
 }
 

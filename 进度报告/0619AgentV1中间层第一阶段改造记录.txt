@@ -1,0 +1,193 @@
+【2026-06-19】Agent V1 中间层第一阶段改造记录
+================================================
+
+一、本轮目标
+-----------
+
+在不改变现有 /api/v1/*、web/ 前端和核心 Agent 行为的前提下，建立平台集成中间层第一版：
+
+- 统一协议模型。
+- 进程内 RunStore。
+- 标准 Event/SSE。
+- Chat/Audit 旧能力适配器。
+- 独立 /api/agent/v1/* 路由。
+- 默认关闭的特性开关。
+- 契约和并发测试。
+
+
+二、新增代码
+-----------
+
+src/agent_api/__init__.py
+  Agent V1 功能域入口。
+
+src/agent_api/models.py
+  Run、Event、Attachment、Output、Error、Capability 等 Pydantic 模型。
+
+src/agent_api/errors.py
+  AgentApiException 和异常转标准 AgentError。
+
+src/agent_api/store.py
+  InMemoryRunStore、request_id 幂等、有序事件、取消和原子终止。
+
+src/agent_api/events.py
+  EventEmitter 和标准 SSE 格式化。
+
+src/agent_api/adapters.py
+  ChatAdapter、AuditAdapter 和旧 SSE 解析转换。
+
+src/agent_api/service.py
+  Run 创建、后台执行、超时、heartbeat、取消、完成和失败处理。
+
+src/agent_api/routes.py
+  Agent V1 八个外部接口。
+
+src/agent_api/attachments.py
+  平台临时 URL 下载、Host 白名单、大小/有效期/SHA256 校验和 Run 隔离清理。
+
+src/agent_api/outputs.py
+  Output Registry、平台文件发布接口、本地临时托管和上传失败降级。
+
+src/agent_api/vision.py
+  VisionBackend 抽象和现有 TABLE_OCR_URL 兼容后端。
+
+src/agent_api/document_models.py
+  文档、页面、表格、单元格、字段证据、校验问题和模板定义模型。
+
+src/agent_api/table_export.py
+  将结构化 TableResult 确定性生成可编辑 XLSX，支持合并单元格和复核标色。
+
+tests/test_agent_api_contract.py
+  模型、SSE、能力、健康和路由端到端契约测试。
+
+tests/test_agent_api_service.py
+  Run、幂等、取消、附件显式失败和终止竞态测试。
+
+tests/test_agent_api_files.py
+  附件下载、Output、OCR 和表格 Excel 发布测试。
+
+tests/test_agent_api_document_models.py
+  文档模型、表格边界/重叠和模板映射测试。
+
+tests/test_agent_api_table_export.py
+  Excel 值、合并单元格、复核样式和公式注入防护测试。
+
+
+三、修改代码
+-----------
+
+src/config/loader.py
+  新增以下环境开关，默认均为 false：
+
+- AGENT_V1_ENABLED
+- AGENT_V1_USE_NEW_VISION
+- AGENT_V1_USE_PLATFORM_FILES
+- AGENT_V1_USE_NEW_ORCHESTRATOR
+
+src/main.py
+  仅当 AGENT_V1_ENABLED=true 时挂载 /api/agent/v1/*。
+  默认启动行为与原系统一致。
+
+
+四、新增接口
+-----------
+
+- POST /api/agent/v1/runs
+- GET /api/agent/v1/runs/{run_id}
+- GET /api/agent/v1/runs/{run_id}/events
+- POST /api/agent/v1/runs/{run_id}/cancel
+- GET /api/agent/v1/outputs/{output_id}
+- GET /api/agent/v1/outputs/{output_id}/content
+- GET /api/agent/v1/capabilities
+- GET /api/agent/v1/health
+
+当前 intent 支持：
+
+- auto/chat：通过 ChatAdapter 调用现有 CustomsChatAgent。
+- audit：通过 AuditAdapter 调用现有 RiskAnalysisOrchestrator。
+- ocr：下载平台附件，通过 VisionBackend 调用现有或后续视觉模型。
+
+附件下载和临时 Output 已接入。默认 Host 白名单为空，因此未配置时外部附件会被拒绝。
+现有 /api/v1/analyze_image 仍保持不变。
+
+当前 LegacyTableOcrBackend 只返回文本。后续专用视觉模型若返回含 TableResult 的
+DocumentResult，OcrAdapter 会自动生成 XLSX，并根据 output_file_policy 上传平台文件中心
+或使用智能体临时托管。
+
+
+五、协议行为
+-----------
+
+- request_id 在 tenant 范围内幂等。
+- 相同 request_id + 相同请求返回原 run_id。
+- 相同 request_id + 不同内容返回 IDEMPOTENCY_CONFLICT。
+- sequence 从 1 单调递增。
+- 支持 Last-Event-ID 从指定 sequence 后读取。
+- thinking 事件不对外暴露模型私有推理内容。
+- 完成、失败和取消由 RunStore 原子写入终止事件和终止状态。
+- 并发完成/取消时只能产生一个终止事件。
+- heartbeat 默认 20 秒。
+- 普通 Run 必须以 agent_completed、agent_failed 或 agent_cancelled 结束。
+
+
+六、验证结果
+-----------
+
+1. Python compileall
+   结果：通过。
+
+2. Agent V1 定向测试
+   命令：python -X utf8 -m pytest tests/test_agent_api_contract.py tests/test_agent_api_service.py tests/test_agent_api_files.py tests/test_agent_api_document_models.py tests/test_agent_api_table_export.py -q
+   结果：后续第二阶段扩展后累计 41 passed。
+
+3. 配置回归
+   命令：python -X utf8 -m pytest tests/test_config_fix.py -q
+   结果：5 passed。
+
+4. Skill 同步测试
+   基础计算、普通税率、错误处理、参数传递、路径遍历、JSON 格式共 6 项通过。
+
+5. 特性开关
+   AGENT_V1_ENABLED=false：无 /api/agent/v1 路由，验证通过。
+   AGENT_V1_ENABLED=true：Agent V1 路由按开关挂载，验证通过。
+
+6. 已知旧测试问题
+   tests/test_skill_execution.py::test_integration 不是有效的 pytest async 用例，
+   且把 chat_stream() 当前返回的 SSE 字符串当 dict 使用。该问题在本轮改造前已经存在，
+   与 Agent V1 无关，后续契约测试整理阶段单独修复。
+
+
+七、当前限制
+-----------
+
+- RunStore 为进程内存储，服务重启后 Run/Event 丢失。
+- 不支持多进程共享；生产阶段需替换 Redis/数据库实现。
+- 平台鉴权尚未接入。
+- 平台文件中心只定义了发布接口，尚未配置真实平台客户端。
+- Report、Batch 尚未接入 Agent V1 Adapter。
+- OCR Adapter 已接入，但当前上游 Legacy OCR 只返回文本，尚不能真实恢复表格结构。
+- XLSX 渲染器已完成，等待专用视觉模型提供 TableResult。
+- 未修改现有 chat_agent.py 的内部工具架构。
+- Agent V1 默认关闭。
+
+
+八、下一步
+---------
+
+下一步按低风险顺序推进：
+
+1. ReportAdapter，将现有报告文件包装为 Output。
+2. PlatformFileClient 的真实 HTTP 实现和鉴权配置。
+3. VisionService 路由、主备 Backend 和低置信度策略。
+4. 专用视觉模型输出 DocumentResult/TableResult。
+5. 模板注册与 Excel 报关单确定性填写。
+
+
+九、Git 状态
+-----------
+
+已尝试在深度改造前创建基线提交，但当前沙箱禁止写 .git/index.lock，git add 未执行成功。
+暂存区为空，没有半提交。待环境允许写 Git 元数据后，应先提交当前基线和本轮 Agent V1 改造。
+
+补充：项目 .gitignore 当前会忽略 test_*.py 和进度报告目录；如需将新增测试和本记录提交，
+必须由维护者确认后使用 git add -f，或调整忽略策略。

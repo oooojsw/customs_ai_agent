@@ -63,11 +63,21 @@ function renderLLMForm(provider) {
     const preset = PROVIDER_PRESETS[provider] || {};
     
     // 渲染 Key 和 BaseUrl
-    document.getElementById('llmApiKey').value = state.apiKey || '';
+    const apiKeyInput = document.getElementById('llmApiKey');
+    apiKeyInput.value = state.apiKey || '';
+    apiKeyInput.placeholder = state.hasApiKey
+        ? '已保存，留空则保留原密钥'
+        : '请输入 API Key';
     document.getElementById('llmBaseUrl').value = state.baseUrl || preset.base_url || '';
     
     // 渲染模型下拉框
     const modelSelect = document.getElementById('llmModelName');
+    const presetModels = Array.isArray(preset.models) ? preset.models : [];
+    if (presetModels.length > 0) {
+        modelSelect.innerHTML = presetModels
+            .map(model => `<option value="${model}">${model}</option>`)
+            .join('');
+    }
     if (state.modelName) {
         // 如果当前下拉列表没有这个模型，临时加进去防止显示空白
         if (!Array.from(modelSelect.options).some(opt => opt.value === state.modelName)) {
@@ -102,12 +112,9 @@ async function fetchProviderConfigFromDB(provider) {
         const preset = PROVIDER_PRESETS[provider] || {};
 
         if (data.status === 'success' && data.config) {
-            // 如果后端返回了掩码形式的 key，则视为空，要求用户重新输入
-            let safeKey = data.config.api_key || '';
-            if (safeKey.includes('****')) safeKey = '';
-
             llmStateCache[provider] = {
-                apiKey: safeKey,
+                apiKey: '',
+                hasApiKey: Boolean(data.config.has_api_key),
                 baseUrl: data.config.base_url || preset.base_url || '',
                 modelName: data.config.model_name || '',
                 temperature: data.config.temperature !== undefined ? data.config.temperature : 0.3,
@@ -179,12 +186,10 @@ async function initLLMConfig() {
         if (typeof updateUIForAzure === 'function') updateUIForAzure(provider);
         
         // 处理后端的脱敏 Key
-        let safeKey = config.api_key || '';
-        if (safeKey.includes('****')) safeKey = '';
-
         // 把激活的配置塞入缓存
         llmStateCache[provider] = {
-            apiKey: safeKey,
+            apiKey: '',
+            hasApiKey: Boolean(config.has_api_key),
             baseUrl: config.base_url || '',
             modelName: config.model_name || '',
             temperature: config.temperature !== undefined ? config.temperature : 0.3,
@@ -206,8 +211,9 @@ async function saveLLMConfig() {
     const provider = document.getElementById('llmProvider').value;
     const apiKey = document.getElementById('llmApiKey').value.trim();
     const isEnabled = document.getElementById('llmEnabled').checked;
+    const hasSavedKey = Boolean(llmStateCache[provider]?.hasApiKey);
 
-    if (isEnabled && !apiKey) {
+    if (isEnabled && !apiKey && !hasSavedKey) {
         alert("⚠️ API Key 不能为空！");
         return;
     }
@@ -235,6 +241,10 @@ async function saveLLMConfig() {
         });
 
         if (res.ok) {
+            if (!llmStateCache[provider]) llmStateCache[provider] = {};
+            llmStateCache[provider].hasApiKey = hasSavedKey || Boolean(apiKey);
+            llmStateCache[provider].apiKey = '';
+            renderLLMForm(provider);
             alert("✅ 配置已保存并应用！");
             await fetch('/api/v1/config/llm/reload', { method: 'POST' });
         } else {
@@ -264,7 +274,15 @@ async function fetchModels() {
 
     try {
         select.innerHTML = '<option value="">加载中...</option>';
-        const res = await fetch(`/api/v1/config/llm/models?provider=${provider}&api_key=${encodeURIComponent(apiKey)}&base_url=${encodeURIComponent(baseUrl)}`);
+        const res = await fetch('/api/v1/config/llm/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider,
+                api_key: apiKey,
+                base_url: baseUrl
+            })
+        });
         const data = await res.json();
 
         if (data.status === 'success' && data.models?.length > 0) {

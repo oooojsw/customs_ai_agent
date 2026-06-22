@@ -122,16 +122,27 @@ config/faiss_index_local/
 *.tmp
 *.temp
 .tmp/
+.test-tmp/
 temp/
+data/agent_runs/
+data/agent_outputs/
+data/agent_v1_runs.db
+data/agent_v1_runs.db-*
+data/pytest-temp-*/
+data/.publish-*/
+data/exports/
+data/opencode_outputs/
+tmp_*.jpg
+tmp_*.jpeg
+tmp_*.png
 
 # 忽略测试覆盖率报告
 .coverage
 htmlcov/
 .pytest_cache/
 
-# 忽略项目特定的开发文档和进展报告
-进度记录/                    # 项目进度记录（可能包含敏感实现细节）
-进度报告/                    # ⚠️ 重要：此文件夹内容需同步到项目规则，与AGENTS.md同等重要
+# 本地详细过程记录不提交；正式进度报告需要版本化
+进度记录/
 
 # 临时测试文件（使用多种格式确保被忽略）
 测试文件_无用文件
@@ -168,6 +179,9 @@ tmpclaude*
 test_*.py
 *_test.py
 *_fix.py
+!tests/
+!tests/test_*.py
+!tests/**/*_test.py
 
 # 忽略 Docker 相关文件（如果不需要版本控制）
 .dockerignore

@@ -69,6 +69,8 @@ class ImageConfigRepository:
         if existing:
             # 更新现有配置
             for key, value in config_data.items():
+                if key == "api_key" and not str(value or "").strip():
+                    continue
                 if hasattr(existing, key):
                     setattr(existing, key, value)
             existing.updated_at = datetime.now()
@@ -100,13 +102,16 @@ class ImageConfigRepository:
             config.last_tested_at = datetime.now()
             await self.db.commit()
 
-    def to_dict(self, config: ImageModelConfig) -> Dict[str, Any]:
+    def to_dict(
+        self,
+        config: ImageModelConfig,
+        include_secret: bool = False,
+    ) -> Dict[str, Any]:
         """转换为字典"""
-        return {
+        result = {
             "id": config.id,
             "provider": config.provider,
             "is_enabled": config.is_enabled,
-            "api_key": config.api_key,
             "base_url": config.base_url,
             "model_name": config.model_name,
             "api_version": config.api_version,
@@ -116,3 +121,9 @@ class ImageConfigRepository:
             "test_status": config.test_status,
             "description": config.description
         }
+        if include_secret:
+            result["api_key"] = config.api_key
+        else:
+            result["api_key"] = None
+            result["has_api_key"] = bool(config.api_key)
+        return result

@@ -1,0 +1,1061 @@
+【2026-06-18】报关智能体平台集成中间层与多模态协议总体方案（设计版 V1.0）
+============================================================================
+
+一、方案结论
+-----------
+
+本项目后续可以完整部署到平台方环境中，但仍作为一个边界清晰的“报关智能体服务”独立运行。
+最终用户只使用平台方页面，不再区分本地客户端和平台用户端。
+
+平台方不需要逐个对接 OCR、审单、法规检索、报告、Skill、Mock 等内部接口，
+只需要通过统一智能体协议创建一次 Run（执行任务），再消费标准流式事件和最终结果。
+
+现有 /api/v1/* 接口、Agent、审单、OCR、报告、知识库等内部能力暂不重构。
+第一阶段仅新增薄中间层 /api/agent/v1/*，负责协议适配、执行编排、事件转换、
+文件交换、错误包装和运行状态管理，从而尽可能降低大改造成现有功能失败的风险。
+
+双方职责保持如下：
+
+1. 平台方负责用户、权限、页面、永久会话记录、附件存储、文件中心和业务系统入口。
+2. 我方负责智能体执行、上下文处理、工具编排、OCR、审单、法规检索、报告生成、
+   Mock 报关流程、结构化结果、流式事件和运行错误。
+3. 文件和图片优先存入平台文件中心；智能体只返回平台 file_id 和可访问引用。
+4. 平台文件中心暂不可用时，智能体可临时托管输出，但这只是兼容模式。
+
+
+二、设计目标与明确边界
+---------------------
+
+2.1 设计目标
+
+- 对外只呈现一个“报关智能体”，而不是一组互不相关的业务接口。
+- 覆盖当前已有的全部有效能力，并允许未来增加专用视觉模型、真实报关接口和新 Skill。
+- 同一协议同时支持文本、结构化数据、Word/PDF/Excel、图片、压缩包和批量结果。
+- 支持即时任务、长任务、流式输出、断线恢复、取消、重试和幂等。
+- 平台页面与本项目现有 web/ 前端解耦。
+- 不要求第一阶段重写现有 Agent、OCR、审单和报告模块。
+
+2.2 第一阶段不做的事情
+
+- 不直接重构 src/services/chat_agent.py 的全部工具实现。
+- 不删除现有 /api/v1/* 和 /downloads。
+- 不立即替换 SQLite、FAISS 或现有模型配置。
+- 不立即接入真实报关生产系统。
+- 不让平台普通业务调用方直接操作模型配置、知识库重建或 PDF 缓存。
+
+
+三、目标部署结构
+---------------
+
+平台前端
+  |
+  | 用户操作、文件上传、SSE 展示、结果下载
+  v
+平台后端
+  |
+  | 服务鉴权、用户身份、session_id、文件中心、永久消息记录
+  v
+报关智能体薄中间层 /api/agent/v1/*
+  |
+  | 协议适配、Run 管理、事件转换、输出登记、错误包装
+  v
+现有报关智能体能力
+  |- CustomsChatAgent：自然语言对话和工具编排
+  |- RiskAnalysisOrchestrator：多规则智能审单
+  |- TABLE_OCR_URL / ImageExtractor：图片识别
+  |- KnowledgeBase：法规与知识库检索
+  |- ComplianceReporter：合规报告生成
+  |- SkillManager / invoke_skill：HS、税费等 Skill
+  |- DataClient：真实接口尝试 + Mock 报关数据
+  |- BatchProcessor：批量分析
+  |- data/exports：当前文件生成目录
+
+建议使用独立 Python/FastAPI 容器部署在平台内网。对用户而言它属于同一平台，
+但运行进程和依赖仍与平台主体隔离，便于升级、故障隔离和独立维护。
+
+
+四、完整能力覆盖清单
+-------------------
+
+4.1 普通报关咨询
+
+- 多轮对话。
+- 中文、越南语输出。
+- 报关政策、流程和业务问题回答。
+
+4.2 智能审单
+
+- 基础要素完整性。
+- 禁限与敏感货物。
+- 价格真实性逻辑。
+- HS 归类一致性。
+- 单证一致性。
+- 风险汇总和人工查验建议。
+
+4.3 图像与文档识别
+
+- 当前表格 OCR。
+- 当前本地 ImageExtractor 多 Provider 能力。
+- 报关单、发票、装箱单等图片输入。
+- 后续专用视觉模型、版面分析、字段置信度和风险标注图。
+- 多张图片、多份附件和混合文档输入。
+
+图像能力后续不应只定位为 OCR，而应升级为“报关文档视觉引擎”，分为三层：
+
+1. 提取层（Document Extraction）
+   - 图片、扫描 PDF 转文字和结构化字段。
+   - 表格图片转行列、单元格、合并单元格和可编辑 Excel。
+   - 识别报关单、发票、装箱单、原产地证等文档类型。
+
+2. 理解层（Document Understanding）
+   - 将 OCR 结果映射到统一报关字段模型。
+   - 建立多商品、多页、多单证之间的来源关系。
+   - 校验金额合计、数量、币种、HS 编码、申报要素和单证一致性。
+   - 每个字段保留原文、标准值、页码、坐标、置信度、来源附件和人工确认状态。
+
+3. 生成层（Document Composition）
+   - 结构化数据生成可编辑 XLSX。
+   - 将报关数据填写到已有 Excel、DOCX 或 PDF 模板。
+   - 只有空白表格图片时，将原图作为不可修改背景，以坐标模板叠加文字层。
+   - 输出填写后的 XLSX、正式 PDF、PNG 预览图、低置信度标注图和校验报告。
+
+正式报关文件不得依赖生成式图片编辑模型直接改字。生成模型可能改变表格线、数字或已有字段，
+因此模型负责识别、分类和语义映射，程序负责字段校验、模板填写和精确渲染。
+
+图片表格转 Excel 的推荐流程：
+
+图片/PDF -> 图像预处理 -> 版面与表格检测 -> 单元格结构重建 -> 单元格 OCR
+-> 表头语义映射 -> 字段标准化与校验 -> 人工确认低置信度字段 -> JSON + XLSX。
+
+单元格中间结果至少包含 row、column、row_span、column_span、text、confidence 和 bbox，
+从而保证合并单元格、行列关系和原图证据可追溯，而不是只让大模型输出 Markdown 表格。
+
+模板定义至少包含 template_id、version、field、目标 Sheet/Cell 或 page/bbox、字体、对齐、
+溢出策略和字段格式器。Excel 模板还应保留公式、合并单元格、打印区域和受保护单元格。
+
+关键字段建议设置分级复核阈值：高置信度自动采用，中置信度标黄建议确认，低置信度标红必须确认。
+报关单号、HS 编码、金额、币种和数量应使用更严格阈值；未经确认的低置信度字段不得生成正式报关单。
+
+4.4 法规和知识库
+
+- 法规、政策和 HS 解释检索。
+- RAG 证据返回。
+- 后续可返回引用清单、法规文件片段和来源定位。
+
+4.5 报告与文件
+
+- 合规建议书。
+- Word 文件。
+- 后续 PDF、Excel、图片报告、压缩包。
+- 报告全文、摘要及下载引用。
+
+4.6 Skill 和工具
+
+- HS 编码归类顾问。
+- 税费估算。
+- 后续新增 Skill、资源文件和计算脚本。
+- 工具调用过程可通过 Event 对平台展示，但工具实现不直接暴露。
+
+4.7 报关数据和流程模拟
+
+- 按 entry_id 查询报关单。
+- 真实接口失败时使用 Mock。
+- 后续模拟申报、审核、退单、补充资料、人工复核、放行等完整状态。
+- 后续可无缝替换为真实报关平台 Connector。
+
+4.8 批量任务
+
+- Excel/CSV 批量审单。
+- 进度查询、取消、部分成功和结果文件。
+
+4.9 内部管理能力
+
+- LLM 配置。
+- 图像模型配置。
+- 知识库索引重建。
+- PDF 缓存管理。
+
+这些能力继续保留，但属于管理面，不通过普通智能体业务协议开放。
+平台若需要统一运维，可后续单独设计 /api/agent-admin/v1/*，与业务调用隔离。
+
+
+五、统一协议对象
+---------------
+
+对外协议只围绕以下六个对象设计：
+
+1. SessionRef：平台会话引用。
+2. Run：一次完整的智能体执行。
+3. Event：Run 执行期间产生的有序事件。
+4. Attachment：平台传给智能体的文件或图片。
+5. Output：智能体产生的文件、图片或结构化结果。
+6. Error：标准错误。
+
+5.1 SessionRef
+
+平台是永久会话记录的唯一事实来源。智能体不负责平台页面中的会话列表。
+
+建议字段：
+
+{
+  "session_id": "platform-session-001",
+  "user_id": "platform-user-001",
+  "tenant_id": "tenant-001",
+  "context_version": 12
+}
+
+session_id 由平台生成并保持稳定。
+context_version 用于防止并发消息覆盖旧上下文。
+
+平台可以采用两种上下文模式：
+
+- 服务端上下文模式：智能体按 session_id 保留短期上下文。
+- 平台回传模式：平台每次传入最近消息或会话摘要，智能体不依赖本地永久存储。
+
+推荐平台回传“会话摘要 + 最近若干轮消息”，避免智能体重启导致上下文丢失。
+
+5.2 Run
+
+Run 是一次用户任务，从开始到完成、失败或取消。
+
+状态固定为：
+
+- queued
+- running
+- waiting_external
+- completed
+- partially_completed
+- failed
+- cancelled
+
+一次 Run 可以调用多个内部能力，也可以产生多个 Output。
+
+5.3 Event
+
+Event 是 Run 的流式过程信息。所有 Event 必须带顺序号，平台可据此去重和恢复。
+
+5.4 Attachment
+
+Attachment 是输入附件引用，不在 JSON 中传输大段 Base64。
+
+5.5 Output
+
+Output 是智能体产生的非纯文本结果，包括文件、图片和结构化数据。
+
+5.6 Error
+
+Error 同时包含机器可处理的 error_code 和用户可展示的 message。
+
+
+六、建议对外接口
+---------------
+
+第一版建议仅提供以下业务接口：
+
+1. POST /api/agent/v1/runs
+   创建一次智能体任务，立即返回 run_id。
+
+2. GET /api/agent/v1/runs/{run_id}/events
+   使用 SSE 消费流式事件。
+
+3. GET /api/agent/v1/runs/{run_id}
+   查询任务状态、最终答案和全部 Outputs。
+
+4. POST /api/agent/v1/runs/{run_id}/cancel
+   请求取消长任务。
+
+5. GET /api/agent/v1/capabilities
+   查询智能体版本、能力、支持输入和支持输出。
+
+6. GET /api/agent/v1/health
+   平台探活。建议区分 service、LLM、OCR、knowledge_base、file_center 状态。
+
+兼容模式可额外提供：
+
+7. GET /api/agent/v1/outputs/{output_id}
+   查询临时托管 Output 的元信息。
+
+8. GET /api/agent/v1/outputs/{output_id}/content
+   下载或预览临时托管的文件/图片。
+
+如果平台文件中心已经可用，则 7、8 只作为降级接口，不是主路径。
+
+
+七、创建 Run 的请求协议
+----------------------
+
+示例：
+
+{
+  "request_id": "req-20260618-001",
+  "session": {
+    "session_id": "session-001",
+    "user_id": "user-001",
+    "tenant_id": "tenant-001",
+    "context_version": 12
+  },
+  "message": {
+    "role": "user",
+    "content": "审查这份报关单，重点核对 HS 编码和价格，并生成建议书"
+  },
+  "language": "zh",
+  "attachments": [
+    {
+      "file_id": "platform-file-001",
+      "kind": "image",
+      "name": "报关单.png",
+      "mime_type": "image/png",
+      "size": 182340,
+      "download_url": "https://platform/files/temp/xxx",
+      "expires_at": "2026-06-18T16:00:00+08:00",
+      "sha256": "可选校验值"
+    }
+  ],
+  "business_context": {
+    "entry_id": "530120250001",
+    "mock_mode": true,
+    "source_system": "main-platform",
+    "declaration_data": null
+  },
+  "conversation_context": {
+    "summary": "此前用户正在核对该票芯片进口申报",
+    "recent_messages": []
+  },
+  "options": {
+    "response_mode": "stream",
+    "include_tool_trace": true,
+    "include_structured_result": true,
+    "output_file_policy": "upload_to_platform",
+    "timeout_seconds": 600
+  },
+  "callback": {
+    "completed_url": null
+  }
+}
+
+协议说明：
+
+- request_id：平台生成，用于幂等。相同 request_id 重试时不得重复执行。
+- session：平台身份和会话引用。
+- message：本次用户消息。
+- attachments：输入图片或文件列表。
+- business_context：报关业务上下文，可传 entry_id，也可直接传结构化数据。
+- conversation_context：平台可选回传摘要和最近消息。
+- options：控制流式、工具轨迹、结构化结果和文件处理方式。
+- callback：长任务完成后可选回调，SSE 不是唯一获知完成的方式。
+
+不允许：
+
+- 把 API Key、模型密钥放入请求。
+- 把服务器本地路径当作附件地址。
+- 把几十 MB 的 Base64 放入 message。
+- 由前端浏览器直接调用智能体服务的管理接口。
+
+
+八、Attachment 输入协议
+----------------------
+
+8.1 支持类型
+
+- image：PNG/JPEG/WebP/TIFF 等图片。
+- document：PDF、DOCX、TXT。
+- spreadsheet：XLSX、CSV。
+- archive：ZIP 等组合材料，后续启用。
+- structured_data：平台直接传入的报关 JSON。
+
+8.2 首选方式：平台文件中心
+
+流程：
+
+1. 用户先把附件上传到平台文件中心。
+2. 平台调用智能体时传 file_id 和短期 download_url。
+3. 智能体服务端下载文件并校验 MIME、大小和 sha256。
+4. 智能体不得把平台临时 URL写入最终答案或日志明文。
+
+8.3 URL 有效期
+
+- URL 有效期必须覆盖任务预计执行时间。
+- 长任务开始前应尽快把附件下载到受控临时目录。
+- 下载完成后，不再依赖原 URL。
+- 临时文件在 Run 完成后按策略删除。
+
+8.4 多附件语义
+
+Attachment 可以增加 purpose：
+
+- declaration：报关单。
+- invoice：发票。
+- packing_list：装箱单。
+- certificate：原产地证等证明。
+- source_table_image：需要转换为结构化表格或 Excel 的图片。
+- declaration_template：需要填写的报关单模板。
+- document_template：通用 Excel、DOCX、PDF 或图片模板。
+- reference：普通参考材料。
+- unknown：由智能体识别。
+
+智能体应保留每个附件的 file_id 和来源关系，避免多份单证内容混淆。
+
+需要图片转表格或模板填写时，Run options 可增加：
+
+{
+  "output_formats": ["json", "xlsx", "pdf", "png"],
+  "template_id": "customs-declaration-v1",
+  "require_review": true,
+  "preserve_layout": true
+}
+
+
+九、SSE 流式协议
+---------------
+
+9.1 基本格式
+
+响应头：
+
+- Content-Type: text/event-stream
+- Cache-Control: no-cache
+- Connection: keep-alive
+
+每个事件使用标准 SSE 格式：
+
+id: 17
+event: message_delta
+data: {"run_id":"run-001","sequence":17,"timestamp":"...","data":{...}}
+
+9.2 统一事件外壳
+
+{
+  "schema_version": "1.0",
+  "run_id": "run-001",
+  "request_id": "req-001",
+  "session_id": "session-001",
+  "sequence": 17,
+  "timestamp": "2026-06-18T15:30:00+08:00",
+  "event": "message_delta",
+  "data": {}
+}
+
+9.3 事件类型
+
+1. agent_started
+   Run 已开始。
+
+2. status_changed
+   当前阶段变化，例如 downloading_attachments、recognizing_image、auditing、
+   classifying_document、preprocessing_image、detecting_layout、extracting_table、
+   normalizing_fields、validating_fields、waiting_review、filling_template、
+   rendering_document、searching_regulations、generating_report、uploading_output。
+
+3. message_delta
+   面向用户的回答增量。平台按 sequence 顺序拼接。
+
+4. tool_started
+   内部能力开始，例如 image_ocr、declaration_audit、regulation_search。
+
+5. tool_progress
+   有明确进度时使用，如批量审单 37/100、报告生成第 3 阶段。
+   无法计算百分比时只提供阶段描述，禁止伪造精确百分比。
+
+6. tool_finished
+   内部能力结束。默认只返回摘要，不把超长工具结果塞入 SSE。
+
+7. output_created
+   文件、图片或结构化结果已产生。
+
+8. warning
+   可继续执行的异常，例如 OCR 失败后改用用户文字。
+
+9. heartbeat
+   长时间没有业务事件时维持连接，建议 15-30 秒一次。
+
+10. agent_completed
+    唯一正常终止事件，包含最终答案、状态和 Outputs 汇总。
+
+11. agent_failed
+    唯一失败终止事件，包含标准 Error。
+
+12. agent_cancelled
+    取消终止事件。
+
+9.4 顺序和终止规则
+
+- sequence 从 1 递增。
+- 每个 Run 只能出现一个终止事件。
+- 终止事件之后不得继续发送业务事件。
+- 连接断开不等于任务失败。
+- 平台不能仅依赖 TCP 断开判断任务完成，必须识别终止事件。
+
+9.5 断线恢复
+
+- 平台重连时传 Last-Event-ID。
+- 智能体从该 sequence 之后继续发送。
+- 平台按 run_id + sequence 去重。
+- 如果事件缓冲已过期，平台改用 GET /runs/{run_id} 获取最终快照。
+
+9.6 不支持 SSE 的平台
+
+平台可创建 Run 后轮询 GET /runs/{run_id}。
+该模式没有逐字输出，但最终答案、状态、Outputs 完全一致。
+
+
+十、Output：文件、图片与结构化结果协议
+------------------------------------
+
+10.1 Output 类型
+
+- document：DOCX、PDF、TXT、Markdown。
+- image：PNG、JPEG、WebP、后续风险标注图或生成图。
+- spreadsheet：XLSX、CSV。
+- structured_data：OCR JSON、审单 JSON、法规引用、报关流程状态。
+- table：适合平台直接渲染的表格数据。
+- template_definition：模板版本和字段坐标/单元格映射。
+- validation_report：字段校验、低置信度和人工复核结果。
+- archive：多个文件的 ZIP。
+- citation_set：法规和证据引用集合。
+
+10.2 Output 描述对象
+
+{
+  "output_id": "out-001",
+  "kind": "document",
+  "format": "docx",
+  "name": "进口芯片合规建议书.docx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "size": 248120,
+  "sha256": "校验值",
+  "source_tool": "generate_compliance_report",
+  "platform_file_id": "platform-file-998",
+  "preview_url": "平台预览地址，可选",
+  "download_url": "平台下载地址，可选",
+  "agent_output_url": null,
+  "metadata": {
+    "page_count": 12
+  },
+  "created_at": "...",
+  "expires_at": null
+}
+
+10.3 图片 Output
+
+图片使用同一 Output 对象，metadata 额外包含：
+
+{
+  "width": 1920,
+  "height": 1080,
+  "thumbnail_file_id": "platform-file-thumb-001",
+  "purpose": "risk_annotation",
+  "source_attachment_ids": ["platform-file-001"]
+}
+
+平台可直接预览图片，也可以下载原图。
+图片二进制不得放入 SSE 或最终 JSON。
+
+图像相关 Output 的 purpose 建议包括：
+
+- document_preview：填写后文档预览图。
+- risk_annotation：风险字段标注图。
+- confidence_annotation：低置信度字段标注图。
+- rendered_declaration：填写后的报关单图片。
+- extracted_table_preview：图片转表格后的结构预览。
+
+填写后的报关单图片必须关联 template_id、template_version 和 source_output_ids，
+确保能追溯到用于填写的结构化数据和原始附件。
+
+10.4 结构化 Output
+
+小型 JSON 可直接带 data：
+
+{
+  "output_id": "out-ocr-001",
+  "kind": "structured_data",
+  "format": "json",
+  "name": "报关单结构化识别结果",
+  "data": {
+    "entry_id": "...",
+    "goods": [],
+    "confidence": {}
+  }
+}
+
+大型 JSON 或批量结果应作为文件上传平台文件中心，避免响应过大。
+
+表格识别结果应同时支持三种 Output：
+
+- structured_data：单元格、字段、坐标、置信度和来源关系。
+- spreadsheet：可编辑 XLSX，保留合并单元格和基础版式。
+- image：低置信度或结构标注预览图。
+
+模板填写结果建议同时返回：填写后 XLSX/DOCX、正式 PDF、PNG 预览图和 validation_report。
+
+10.5 首选存储模式：上传平台文件中心
+
+1. 智能体生成 Word/PDF/图片到临时目录。
+2. 智能体调用平台提供的服务端上传接口。
+3. 平台返回 platform_file_id、预览引用和下载引用。
+4. 智能体发送 output_created。
+5. 平台页面使用自己的文件权限体系展示或下载。
+6. 智能体删除本地临时文件。
+
+10.6 降级存储模式：智能体临时托管
+
+当平台文件中心暂不可用：
+
+- 智能体登记 output_id。
+- 返回 agent_output_url。
+- 文件设置 TTL，例如 24 小时。
+- 平台恢复后可以重新拉取并转存。
+- Output 标记 storage="agent_temporary"。
+
+文件中心失败不一定让整个 Run 失败。
+如果分析已完成但文件上传失败，Run 应返回 partially_completed，并保留文本结论和临时下载方式。
+
+
+十一、Run 最终快照
+-----------------
+
+GET /runs/{run_id} 和 agent_completed 返回同一结构：
+
+{
+  "run_id": "run-001",
+  "request_id": "req-001",
+  "session_id": "session-001",
+  "status": "completed",
+  "started_at": "...",
+  "completed_at": "...",
+  "final_answer": "已完成审单，发现两项风险，并生成合规建议书。",
+  "structured_result": {
+    "risk_level": "medium",
+    "risk_count": 2
+  },
+  "outputs": [],
+  "warnings": [],
+  "error": null,
+  "usage": {
+    "duration_ms": 12035
+  }
+}
+
+平台只展示文本时读取 final_answer；
+需要业务页面时读取 structured_result；
+需要文件和图片时读取 outputs。
+
+
+十二、错误与部分成功协议
+-----------------------
+
+12.1 HTTP 层错误
+
+- 400：请求格式错误。
+- 401：服务鉴权失败。
+- 403：调用方无权限。
+- 404：Run 或 Output 不存在。
+- 409：幂等冲突、上下文版本冲突。
+- 413：文件过大。
+- 415：文件类型不支持。
+- 422：字段校验失败。
+- 429：并发或调用频率超限。
+- 500：智能体内部异常。
+- 502：上游模型/OCR/平台接口错误。
+- 503：服务未就绪。
+- 504：整体超时。
+
+12.2 业务错误码
+
+- AGENT_INITIALIZATION_FAILED
+- INVALID_REQUEST
+- SESSION_CONTEXT_CONFLICT
+- ATTACHMENT_DOWNLOAD_FAILED
+- ATTACHMENT_EXPIRED
+- ATTACHMENT_TOO_LARGE
+- UNSUPPORTED_ATTACHMENT_TYPE
+- OCR_SERVICE_UNAVAILABLE
+- OCR_EMPTY_RESULT
+- OCR_LOW_CONFIDENCE
+- DECLARATION_DATA_NOT_FOUND
+- AUDIT_ENGINE_FAILED
+- REGULATION_SEARCH_FAILED
+- REPORT_GENERATION_FAILED
+- OUTPUT_UPLOAD_FAILED
+- PLATFORM_FILE_CENTER_UNAVAILABLE
+- MODEL_AUTH_FAILED
+- MODEL_RATE_LIMITED
+- RUN_TIMEOUT
+- RUN_CANCELLED
+- INTERNAL_ERROR
+
+12.3 标准 Error
+
+{
+  "error_code": "OCR_SERVICE_UNAVAILABLE",
+  "message": "图片识别服务暂不可用",
+  "retryable": true,
+  "stage": "recognizing_image",
+  "dependency": "table_ocr",
+  "details": {},
+  "trace_id": "trace-001"
+}
+
+12.4 部分成功
+
+示例：OCR 失败，但用户同时提供了文字，Agent 仍完成审单。
+
+- 发送 warning 事件。
+- Run 继续执行。
+- 最终 status 可为 completed，warnings 中记录 OCR 失败。
+
+示例：分析完成，但 Word 上传平台失败。
+
+- final_answer 和结构化结果照常返回。
+- 如果提供临时文件，则 status=partially_completed。
+- 如果用户明确要求必须生成并交付 Word 且没有任何下载方式，则 status=failed。
+
+
+十三、幂等、重试与并发
+---------------------
+
+13.1 幂等
+
+- request_id 由平台生成并在租户范围内唯一。
+- 相同 request_id 和相同请求体重复提交时，返回原 run_id。
+- 相同 request_id 但请求体不同，返回 409 IDEMPOTENCY_CONFLICT。
+
+13.2 重试
+
+- 平台只自动重试 retryable=true 的错误。
+- OCR、模型 429/502 可指数退避。
+- 报告生成和文件上传重试不得重复生成多个同名 Output。
+
+13.3 同一会话并发
+
+默认同一 session_id 的写入型 Run 串行执行，避免上下文顺序错乱。
+只读查询可并行。若平台需要并行，应传独立 branch_id。
+
+13.4 上下文版本
+
+平台传 context_version。智能体完成后返回新的版本或本次使用版本。
+发现旧版本并发写入时可拒绝或转成独立分支。
+
+
+十四、典型业务场景
+-----------------
+
+14.1 普通文本问答
+
+平台创建 Run -> agent_started -> message_delta -> agent_completed。
+不产生 Output。
+
+14.2 上传报关单图片并审单
+
+平台传 Attachment -> 智能体下载 -> image_ocr -> 生成 OCR structured_data Output
+-> declaration_audit -> regulation_search（按需）-> final_answer。
+
+如果要求报告，再进入 report_generation -> 上传 DOCX -> output_created。
+
+14.3 多单证联合审查
+
+平台同时传报关单、发票、装箱单。
+智能体按 purpose 分别识别，建立单证关联，再调用单证一致性审查。
+每个识别结果保留 source_attachment_ids。
+
+14.4 返回图片
+
+未来视觉模型生成风险标注图或流程图时：
+
+- 图片先上传平台文件中心。
+- output_created 返回 kind=image、platform_file_id、宽高和 purpose。
+- 平台负责预览、下载及权限。
+
+14.4.1 图片表格转 Excel
+
+平台传 purpose=source_table_image 的图片。
+智能体完成表格检测、单元格 OCR、结构重建和字段校验，输出结构化 JSON、可编辑 XLSX
+以及低置信度标注图。平台可先展示复核界面，再确认生成最终 Excel。
+
+14.4.2 根据模板生成填写后的报关单
+
+平台传结构化报关数据和 purpose=declaration_template 的模板。
+智能体按 template_id/version 执行确定性字段映射和渲染，输出可编辑文件、PDF 和预览图。
+如果关键字段低置信度，则先发送 status_changed=waiting_review，不得直接生成正式版本。
+
+只有图片模板时使用“不可修改背景 + 坐标文字层”，不使用生成模型重绘表格或数字。
+
+14.5 Mock 报关流程
+
+平台传 entry_id + mock_mode=true。
+智能体调用 DataClient/Mock Connector 获取数据，模拟申报、审核、风险反馈和报告。
+所有模拟数据必须明确标记 data_source="mock"，避免被误认为真实业务结果。
+
+14.6 真实报关系统接入
+
+未来增加 CustomsDataConnector：
+
+- 接口返回统一 DeclarationData，不改变 Agent 协议。
+- business_context 可指定 data_source="production"。
+- 平台身份和业务权限仍由平台控制。
+
+14.7 批量审单
+
+平台传 XLSX/CSV Attachment。
+Run 进入长任务模式，持续 tool_progress。
+最终输出批量统计 structured_data + Excel 结果 Output。
+单条失败不应使整批失败，最终返回 partially_completed 和失败清单。
+
+14.8 SSE 断线
+
+Run 继续执行。
+平台使用 Last-Event-ID 重连；无法恢复事件时查询 Run 快照。
+
+14.9 用户取消
+
+平台调用 cancel。
+可中断阶段尽快终止；不可中断的外部模型调用结束后不再启动下一阶段。
+最终发送 agent_cancelled。
+
+14.10 平台文件中心故障
+
+优先重试上传。
+仍失败则临时托管并返回 warning；若禁止临时托管，则按用户任务要求决定部分成功或失败。
+
+14.11 OCR 服务故障
+
+- 有用户文字或结构化数据：降级继续。
+- 只有图片：返回可重试错误，不伪造识别结果。
+- 后续可切换备用视觉模型，但需在 Output 中标记 model_used。
+
+14.12 无流式能力的平台
+
+创建 Run 后轮询状态，最终模型完全一致。
+
+
+十五、当前能力到新协议的映射
+---------------------------
+
+- /api/v1/chat
+  映射为 Run 内的 chat/agent planning 能力。
+
+- /api/v1/analyze
+  映射为 declaration_audit 工具事件和结构化审单结果。
+
+- /api/v1/analyze_image
+  映射为 image_ocr 工具事件和 OCR Output。
+
+- /api/v1/generate_report
+  映射为 report_generation 工具事件。
+
+- data/exports + /downloads
+  第一阶段包装成 Output；平台文件中心完成后转为平台 file_id。
+
+- /api/v1/query/declaration/{entry_id}
+  映射为 declaration_query，标明 mock 或 production 数据来源。
+
+- /api/v1/analyze_batch
+  映射为 batch_audit 长任务。
+
+- search_customs_regulations / KnowledgeBase
+  映射为 regulation_search 和 citation_set。
+
+- invoke_skill
+  继续作为 Agent 内部工具，平台只看到 tool_started/tool_finished。
+
+- generate_compliance_report / export_document_file / read_report_buffer
+  统一映射为报告生成、Output 创建和报告查询。
+
+- LLM、图像配置、知识库重建、PDF 缓存
+  保留内部管理接口，不纳入普通 Run 自动调用。
+
+
+十六、鉴权、安全和数据治理
+-------------------------
+
+16.1 服务鉴权
+
+建议平台后端到智能体服务使用：
+
+- 内网 + 服务 API Key；或
+- JWT 服务令牌；正式环境推荐 mTLS + JWT。
+
+浏览器不直接持有智能体服务密钥。
+
+16.2 用户身份
+
+user_id、tenant_id 和 roles 由平台签名传入。
+智能体只把它们作为审计和策略上下文，不自行建立用户账户。
+
+16.3 文件安全
+
+- 校验 MIME、扩展名、大小、sha256。
+- 文件名不能直接参与服务器路径拼接。
+- 临时目录按 run_id 隔离。
+- Run 完成后清理临时输入和输出。
+- 日志不得打印文件下载令牌和模型 API Key。
+
+16.4 数据隔离
+
+- 所有 Run、Output、事件必须带 tenant_id。
+- 不允许跨租户查询 run_id 或 output_id。
+- 法规公共知识库可共享，用户上传材料和会话数据必须隔离。
+
+16.5 审计日志
+
+至少记录：
+
+- request_id、run_id、session_id、user_id、tenant_id。
+- 调用了哪些能力。
+- 依赖服务和模型名称。
+- 任务状态、耗时、错误码。
+- 生成了哪些 Outputs。
+
+不记录完整敏感报关数据，必要时采用脱敏摘要。
+
+
+十七、版本和兼容策略
+-------------------
+
+- URL 使用 /api/agent/v1。
+- 每个事件带 schema_version。
+- 新增可选字段不升级主版本。
+- 删除字段、改变语义、改变终止规则才升级 v2。
+- capabilities 返回协议版本、支持事件、附件类型、Output 类型和限制。
+- 平台必须忽略未知可选字段和未知非终止 Event，保证向前兼容。
+- agent_completed、agent_failed、agent_cancelled 属于不可忽略的终止事件。
+
+
+十八、可观测性和运行指标
+-----------------------
+
+建议使用统一 trace_id 贯穿平台请求、智能体 Run、模型、OCR、文件上传和真实报关接口。
+
+关键指标：
+
+- Run 总量、成功率、部分成功率和失败率。
+- 首个 message_delta 延迟。
+- 总执行时间。
+- OCR、审单、法规检索、报告各阶段耗时。
+- SSE 断线和恢复次数。
+- 平台文件上传成功率。
+- 模型 429、502、超时。
+- 临时 Output 未转存数量。
+- Mock 和 Production 调用比例。
+
+
+十九、双方职责清单
+-----------------
+
+19.1 平台方负责
+
+- 用户登录、角色、租户和业务权限。
+- 生成 user_id、tenant_id、session_id、request_id。
+- 保存永久会话和消息记录。
+- 页面输入、附件上传、预览和下载。
+- 提供附件短期下载 URL。
+- 提供服务端文件上传接口，并返回 platform_file_id。
+- 消费 SSE、处理 sequence、终止事件和断线重连。
+- 展示文本、结构化数据、工具状态、文件和图片。
+- 后续提供真实报关业务接口。
+- 管理对外网络入口和平台侧审计。
+
+19.2 我方负责
+
+- 统一 /api/agent/v1/* 中间层。
+- Run 状态、事件顺序、幂等和取消。
+- 会话执行上下文和平台回传上下文适配。
+- OCR、专用视觉模型适配和识别结果。
+- 智能审单、法规检索、报告生成和 Skill 编排。
+- Mock 报关数据和流程。
+- 将生成文件/图片上传平台文件中心。
+- 平台文件中心失败时的临时托管降级。
+- 统一错误码、日志、健康检查和能力声明。
+- 保持现有 /api/v1/* 可继续用于本地开发和回归测试。
+
+
+二十、平台联调前必须确认的协议决策
+---------------------------------
+
+1. 平台后端是否支持 SSE 转发；若不支持，是否采用轮询。
+2. 服务鉴权采用 API Key、JWT 还是 mTLS。
+3. session_id、request_id 的格式和唯一范围。
+4. 平台是否回传最近消息或会话摘要。
+5. 平台附件下载 URL 的获取方式、权限和有效期。
+6. 平台文件上传接口的请求格式、大小限制和返回字段。
+7. 文件预览和下载 URL 是否允许直接返回，还是只返回 file_id。
+8. 平台是否需要展示工具轨迹。
+9. 单个 Run 的最大执行时间。
+10. SSE heartbeat 和事件保留时间。
+11. 断线恢复是否使用 Last-Event-ID。
+12. Mock 与真实报关数据如何切换。
+13. 平台是否允许智能体临时托管输出。
+14. 数据保存期限、脱敏和审计要求。
+15. 最大并发、限流和重试策略。
+
+
+二十一、最小改动实施计划
+-----------------------
+
+阶段 0：协议确认
+
+- 双方确认本方案中的 Run、Event、Attachment、Output、Error。
+- 平台提供文件中心和鉴权接口草案。
+- 固定 V1 字段和事件。
+
+阶段 1：薄中间层基础版
+
+- 新增 /api/agent/v1/runs。
+- 新增 Run 查询、SSE 事件和取消。
+- 先适配普通 chat 和 declaration_audit。
+- 保留现有接口和前端。
+
+阶段 2：多模态和 Output
+
+- 接入 Attachment 下载。
+- 适配 OCR。
+- 建立统一 DocumentResult、TableResult、FieldEvidence 和 TemplateDefinition 数据模型。
+- 实现图片表格转结构化 JSON/XLSX，并保留单元格坐标、合并关系和置信度。
+- 将 data/exports 文件包装成 Output。
+- 接入平台文件上传。
+- 支持文件和图片 output_created。
+
+阶段 3：能力全覆盖
+
+- 接入法规检索、报告、Skill、Mock 流程和批量审单。
+- 建立 Excel/DOCX/PDF 模板注册和版本管理。
+- 实现结构化数据填写模板，生成 XLSX、PDF、PNG 预览和字段标注图。
+- 增加低置信度字段人工复核状态和校验报告。
+- 增加部分成功、断线恢复、幂等和完整错误码。
+
+阶段 4：生产化
+
+- 服务鉴权、租户隔离、限流、审计日志、指标监控。
+- 接入真实报关 Connector。
+- 接入专用视觉模型和备用模型。
+- 扩展多单证版面模型、手写识别、印章检测和批量模板生成。
+- 压测、故障演练和版本冻结。
+
+
+二十二、验收标准
+---------------
+
+1. 平台只使用 /api/agent/v1/* 即可访问全部业务能力。
+2. 普通文本、图片审单、报告文件和 Mock 流程均能完成。
+3. SSE 必须有顺序号、heartbeat 和明确终止事件。
+4. SSE 断开后 Run 不丢失，可重连或查询快照。
+5. Word/PDF/Excel/图片均通过 Output 返回，不暴露本地路径。
+6. 平台文件中心正常时返回 platform_file_id。
+7. 文件中心故障时有明确降级或部分成功策略。
+8. 相同 request_id 重试不会重复执行。
+9. OCR、模型、知识库、文件中心故障都有稳定错误码。
+10. Mock 数据和真实数据来源可明确区分。
+11. 现有 /api/v1/* 和本地演示前端仍可正常回归。
+12. 新能力可以通过新增内部工具和 Output 类型扩展，不破坏 V1 协议。
+
+
+二十三、最终对外表述
+-------------------
+
+本项目最终以“平台内置的报关智能体服务”交付。
+
+平台负责用户、权限、永久会话、页面和文件中心；我方负责智能体执行和全部报关能力。
+平台只创建 Run 并消费 Event，智能体内部自行调用 OCR、审单、法规检索、报告、Skill、
+Mock 或未来真实报关接口。文字通过 SSE 增量返回，文件、图片和结构化结果通过 Output 返回。
+
+该方案既能完整部署到平台环境中，也能保持双方代码和人员职责清晰；
+第一阶段通过薄中间层复用现有能力，避免为集成而大规模重写已经能运行的功能。

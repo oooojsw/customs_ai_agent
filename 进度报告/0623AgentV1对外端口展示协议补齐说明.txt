@@ -1,0 +1,94 @@
+Agent V1 对外端口展示协议补齐说明
+日期：2026-06-23
+
+一、当前对接目标
+本系统后续作为“报关智能体服务”接入外部平台。平台侧不需要调用本系统内部工具，也不需要理解内部 LangGraph、审单、Mock 海关等实现，只需要调用 Agent V1 统一端口：
+
+1. POST /api/agent/v1/runs
+   创建一次智能体任务。
+
+2. GET /api/agent/v1/runs/{run_id}/events
+   消费 SSE 流式事件。
+
+3. POST /api/agent/v1/runs/{run_id}/cancel
+   用户点击停止时取消任务。
+
+二、平台侧最小展示方式
+平台侧按 SSE event 类型展示即可：
+
+1. message_delta
+   展示智能体文字流。
+
+2. tool_started / tool_finished
+   展示工具调用开始、结束和结果摘要。
+   工具事件现在统一包含：
+   - tool
+   - display_name
+   - status
+   - interaction_kind
+   - auto_expand
+   - started_at 或 finished_at
+   - summary
+
+   其中 interaction_kind=customs_authority 表示“海关模拟窗口回复”，平台侧应默认展开。
+   海关窗口 tool_finished 会携带 customs_reply 字段，可直接展示为海关回执内容。
+
+3. customs_process_updated
+   展示 Mock 报关流程进度。
+   事件现在包含：
+   - business_case_id
+   - customs_case_id
+   - stage
+   - stage_label
+   - stage_order
+   - total_stages
+   - progress_percent
+   - is_terminal
+   - summary
+   - receipt_summary
+   - allowed_actions
+   - receipt
+   - risk_items
+   - mock
+
+   平台侧可直接用 stage_order / total_stages / progress_percent 画流程条，用 is_terminal 判断是否结束，用 risk_items 展示风险提示。
+
+4. output_created
+   展示文件、图片、表格、归档等生成物。
+   统一读取 output 字段：
+   - output_id
+   - kind
+   - format
+   - name
+   - mime_type
+   - download_url
+   - agent_output_url
+   - platform_file_id
+   - source_tool
+   - metadata
+   - data
+
+   当前演示环境主要返回 agent_output_url、download_url 或结构化 data；后续如果平台提供统一文件中心，本系统可上传后回填 platform_file_id。
+
+5. agent_completed / agent_failed / agent_cancelled
+   展示任务完成、失败或取消。
+
+三、本次补齐内容
+1. 工具事件增加默认展示字段，普通工具默认 interaction_kind=agent_tool、auto_expand=false。
+2. 海关模拟窗口工具保持 interaction_kind=customs_authority、auto_expand=true，并返回 customs_reply。
+3. 如果工具开始后任务异常或被取消，服务会补发 tool_finished，status=error，平台不会永久停留在“正在调用”。
+4. Mock 报关流程事件增加 stage_order、total_stages、progress_percent、is_terminal、risk_items。
+5. RunService 对 adapter 返回的 outputs 做兜底：如果 adapter 只返回 outputs 但没有主动发 output_created，服务层会自动补发。
+6. output_created 的 output 结构保留空字段，例如 platform_file_id=null，方便平台侧统一解析。
+
+四、平台侧需要做什么
+1. 创建任务时传入用户、会话、租户和 message。
+2. 保存 run_id，并连接 events_url。
+3. 按 event 类型渲染文字、工具、流程、文件和收尾状态。
+4. 用户点击停止时调用 cancel 接口。
+5. 如果平台有文件中心，后续提供上传接口和返回 file_id 的协议，本系统再对接上传。
+
+五、当前边界
+1. 当前仍为 Mock 报关流程，不接真实海关系统。
+2. 多模态识图细节不在本次范围内，但图片、Excel、表格等输出已经可以通过 output_created 扩展表达。
+3. 本次不重做本项目网页前端，重点是让外部平台通过端口拿到可展示的完整事件。

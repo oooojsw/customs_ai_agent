@@ -1,0 +1,46 @@
+{
+  "case_version": "1.0",
+  "description": "进口精密测量设备申报价格偏低，触发风险布控和模拟查验后放行。",
+  "documents": [
+    {"document_id": "DOC-CONTRACT-003", "document_type": "contract"},
+    {"document_id": "DOC-INVOICE-003", "document_type": "invoice"},
+    {"document_id": "DOC-PACKING-003", "document_type": "packing_list"},
+    {"document_id": "DOC-BL-003", "document_type": "bill_of_lading"}
+  ],
+  "declaration": {
+    "consignee": "苏州精密检测技术有限公司",
+    "overseas_consignor": "Swiss Metrology AG",
+    "transport_mode": "空运",
+    "bill_of_lading_no": "MOCKAWB20260003",
+    "invoice_no": "INV-2026-003",
+    "contract_no": "CON-2026-003",
+    "packing_list_no": "PL-2026-003",
+    "freight": 2200,
+    "insurance": 500,
+    "goods": [{
+      "item_no": 1,
+      "name": "三坐标测量机",
+      "hs_code": "90318090",
+      "quantity": 2,
+      "quantity_unit": "台",
+      "unit_price": 25000,
+      "total_price": 50000,
+      "gross_weight": 1800,
+      "net_weight": 1650,
+      "origin_country": "瑞士",
+      "brand": "METRO-S",
+      "model": "CMM-900",
+      "usage": "工业零部件尺寸精密检测",
+      "material": "花岗岩平台、金属导轨及电子测头",
+      "reference_unit_price_min": 40000,
+      "reference_unit_price_max": 70000
+    }]
+  },
+  "force_inspection": true,
+  "price_evidence": ["进口合同", "商业发票", "年度折扣协议"],
+  "inspection_result": "MATCHED",
+  "inspection_differences": ["申报价格需结合折扣协议复核，实物型号与数量一致"],
+  "exchange_rate": 7.2,
+  "duty_rate": 0.05,
+  "vat_rate": 0.13
+}

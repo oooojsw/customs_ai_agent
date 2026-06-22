@@ -586,9 +586,18 @@ async def cancel_index_rebuild(request: Request):
 # 9. LLM 配置管理接口
 # ==========================================
 
+
+def _mask_api_key(api_key: str | None) -> str:
+    """Return a non-reversible hint without exposing the stored secret."""
+    if not api_key:
+        return ""
+    if len(api_key) <= 8:
+        return "****"
+    return f"{api_key[:4]}****{api_key[-4:]}"
+
 class LLMConfigRequest(BaseModel):
     provider: str
-    api_key: str
+    api_key: str = ""
     base_url: str
     model_name: str
     api_version: Optional[str] = None
@@ -609,7 +618,9 @@ class LLMConfigResponse(BaseModel):
     temperature: float
     test_status: str
     last_tested_at: Optional[str] = None
-    api_key: Optional[str] = None  # 添加API Key字段用于前端填充
+    api_key: Optional[str] = None
+    has_api_key: bool = False
+    api_key_preview: str = ""
 
     # ==================== 新增：图像识别配置 ====================
     image_enabled: Optional[bool] = True
@@ -641,6 +652,8 @@ async def get_llm_config():
                 temperature=0.3,
                 test_status="never",
                 last_tested_at=None,
+                has_api_key=bool(settings.DEEPSEEK_API_KEY),
+                api_key_preview=_mask_api_key(settings.DEEPSEEK_API_KEY),
                 image_enabled=False,
                 image_model_name=None
             )
@@ -653,7 +666,8 @@ async def get_llm_config():
             temperature=config.temperature,
             test_status=config.test_status,
             last_tested_at=config.last_tested_at.isoformat() if config.last_tested_at else None,
-            api_key=config.api_key,  # 返回API Key用于前端填充
+            has_api_key=bool(config.api_key),
+            api_key_preview=_mask_api_key(config.api_key),
             # ==================== 新增：图像识别配置 ====================
             image_enabled=getattr(config, 'image_enabled', False),
             image_model_name=getattr(config, 'image_model_name', None)
@@ -675,6 +689,14 @@ async def save_llm_config(config: LLMConfigRequest):
         # --- 数据清洗逻辑 ---
         config_dict = config.dict()
         provider = config_dict.get('provider')
+        existing = await repo.get_config_by_provider(provider)
+        if config.is_enabled and not config.api_key.strip() and not (
+            existing and existing.api_key
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="启用该服务商前必须提供 API Key",
+            )
 
         # 如果不是 Azure，强制清空 Azure 特有字段，防止污染
         if provider != 'azure':
@@ -703,10 +725,23 @@ async def test_llm_connection(config: LLMConfigRequest):
         from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage
 
+        api_key = config.api_key.strip()
+        if not api_key and BATCH_AVAILABLE:
+            from src.database.connection import AsyncSessionLocal
+            from src.database.crud import LLMConfigRepository
+
+            async with AsyncSessionLocal() as db:
+                existing = await LLMConfigRepository(
+                    db
+                ).get_config_by_provider(config.provider)
+                api_key = existing.api_key if existing else ""
+        if not api_key:
+            raise HTTPException(status_code=422, detail="API Key 未配置")
+
         async_client = httpx.AsyncClient(verify=False, timeout=30.0)
         test_llm = ChatOpenAI(
             model=config.model_name,
-            api_key=config.api_key,
+            api_key=api_key,
             base_url=config.base_url,
             temperature=0.1,
             http_async_client=async_client,
@@ -832,7 +867,7 @@ async def get_all_llm_configs():
                 "model_name": config.model_name,
                 "temperature": config.temperature,
                 "test_status": config.test_status,
-                "api_key_preview": config.api_key[:8] + "..." if config.api_key else "",
+                "api_key_preview": _mask_api_key(config.api_key),
                 "has_api_key": bool(config.api_key)
             })
 
@@ -870,8 +905,9 @@ async def get_provider_config(provider: str):
                 "temperature": config.temperature,
                 "api_version": config.api_version,
                 "test_status": config.test_status,
-                # 返回完整API Key用于前端填充
-                "api_key": config.api_key
+                "api_key": None,
+                "has_api_key": bool(config.api_key),
+                "api_key_preview": _mask_api_key(config.api_key),
             }
         }
 
@@ -1043,12 +1079,30 @@ async def get_available_models(
         }
 
 
+class ModelListRequest(BaseModel):
+    provider: str
+    api_key: str = ""
+    base_url: Optional[str] = None
+    api_version: Optional[str] = None
+
+
+@router.post("/config/llm/models")
+async def post_available_models(request: ModelListRequest):
+    """获取模型列表，避免将 API Key 放入 URL 和访问日志。"""
+    return await get_available_models(
+        provider=request.provider,
+        api_key=request.api_key,
+        base_url=request.base_url,
+        api_version=request.api_version,
+    )
+
+
 # ==================== 图像识别配置 API ====================
 
 class ImageConfigRequest(BaseModel):
     """图像配置请求模型"""
     provider: str
-    api_key: str
+    api_key: str = ""
     base_url: Optional[str] = None
     model_name: str
     api_version: Optional[str] = None
@@ -1064,7 +1118,9 @@ class ImageConfigResponse(BaseModel):
     id: Optional[int] = None
     provider: str
     is_enabled: bool
-    api_key: Optional[str] = None  # ✅ 添加 API Key 字段
+    api_key: Optional[str] = None
+    has_api_key: bool = False
+    api_key_preview: str = ""
     base_url: Optional[str] = None
     model_name: str
     api_version: Optional[str] = None
@@ -1086,7 +1142,8 @@ async def get_image_config():
         return ImageConfigResponse(
             provider=config["provider"],
             is_enabled=config["is_enabled"],
-            api_key=config.get("api_key"),  # ✅ 添加 API Key
+            has_api_key=bool(config.get("api_key")),
+            api_key_preview=_mask_api_key(config.get("api_key")),
             base_url=config.get("base_url"),
             model_name=config["model_name"],
             api_version=config.get("api_version"),
@@ -1111,7 +1168,8 @@ async def get_image_config():
                 id=config.id,
                 provider=config.provider,
                 is_enabled=config.is_enabled,  # 告诉前端配置是否启用
-                api_key=config.api_key,  # ✅ 添加 API Key
+                has_api_key=bool(config.api_key),
+                api_key_preview=_mask_api_key(config.api_key),
                 base_url=config.base_url,
                 model_name=config.model_name,
                 api_version=config.api_version,
@@ -1129,7 +1187,8 @@ async def get_image_config():
             return ImageConfigResponse(
                 provider=env_config["provider"],
                 is_enabled=False,
-                api_key=env_config.get("api_key"),  # ✅ 添加 API Key
+                has_api_key=bool(env_config.get("api_key")),
+                api_key_preview=_mask_api_key(env_config.get("api_key")),
                 base_url=env_config.get("base_url"),
                 model_name=env_config["model_name"],
                 api_version=env_config.get("api_version"),
@@ -1143,16 +1202,6 @@ async def get_image_config():
 @router.post("/config/image")
 async def save_image_config(config: ImageConfigRequest):
     """保存图像识别配置"""
-    print(f"\n{'='*80}")
-    print(f"📝 [Image Config] 保存图像识别配置")
-    print(f"{'='*80}")
-    print(f"Provider: {config.provider}")
-    print(f"API Key: {config.api_key[:15]}...{config.api_key[-5:] if len(config.api_key) > 20 else '***'} (长度: {len(config.api_key)})")
-    print(f"Base URL: {config.base_url}")
-    print(f"Model: {config.model_name}")
-    print(f"Enabled: {config.is_enabled}")
-    print(f"{'='*80}\n")
-
     if not BATCH_AVAILABLE:
         raise HTTPException(status_code=501, detail="数据库不可用")
 
@@ -1160,21 +1209,20 @@ async def save_image_config(config: ImageConfigRequest):
     async with AsyncSessionLocal() as db:
         from src.database.image_config_crud import ImageConfigRepository
         repo = ImageConfigRepository(db)
+        existing = await repo.get_by_provider(config.provider)
+        if config.is_enabled and not config.api_key.strip() and not (
+            existing and existing.api_key
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="启用该服务商前必须提供 API Key",
+            )
 
         # 转换为字典
         config_data = config.dict(exclude_unset=True)
 
         # 保存配置
         saved_config = await repo.create_or_update(config_data)
-
-        print(f"\n{'='*80}")
-        print(f"✅ [Image Config] 配置保存完成")
-        print(f"{'='*80}")
-        print(f"ID: {saved_config.id}")
-        print(f"Provider: {saved_config.provider}")
-        print(f"Model: {saved_config.model_name}")
-        print(f"Enabled: {saved_config.is_enabled}")
-        print(f"{'='*80}\n")
 
         return {
             "status": "success",
@@ -1189,8 +1237,19 @@ async def test_image_connection(config: ImageConfigRequest):
     try:
         import httpx
 
+        api_key = config.api_key.strip()
+        if not api_key and BATCH_AVAILABLE:
+            from src.database.connection import AsyncSessionLocal
+            from src.database.image_config_crud import ImageConfigRepository
+
+            async with AsyncSessionLocal() as db:
+                existing = await ImageConfigRepository(db).get_by_provider(
+                    config.provider
+                )
+                api_key = existing.api_key if existing else ""
+
         # 1. 基础校验
-        if not config.api_key or len(config.api_key) < 5:
+        if not api_key or len(api_key) < 5:
             return {"status": "error", "message": "API Key 无效或为空"}
         if not config.model_name:
             return {"status": "error", "message": "请指定模型名称"}
@@ -1210,7 +1269,7 @@ async def test_image_connection(config: ImageConfigRequest):
         # 场景 B: Gemini (Google)
         # =======================================================
         if config.provider == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.model_name}:generateContent?key={config.api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.model_name}:generateContent?key={api_key}"
             test_payload = {"contents": [{"parts": [{"text": "Hi"}]}]}
 
             async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
@@ -1229,7 +1288,7 @@ async def test_image_connection(config: ImageConfigRequest):
 
             base = config.endpoint.rstrip('/')
             url = f"{base}/openai/deployments/{config.model_name}/chat/completions?api-version={config.api_version}"
-            headers = {"api-key": config.api_key, "Content-Type": "application/json"}
+            headers = {"api-key": api_key, "Content-Type": "application/json"}
             test_payload = {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 5}
 
             async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
@@ -1259,7 +1318,7 @@ async def test_image_connection(config: ImageConfigRequest):
             url = f"{base}/chat/completions"
 
             headers = {
-                "Authorization": f"Bearer {config.api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             }
 
@@ -1336,7 +1395,7 @@ async def reload_image_config():
         config = await repo.get_active_config()
 
         if config:
-            config_dict = repo.to_dict(config)
+            config_dict = repo.to_dict(config, include_secret=True)
             image_config_loader.set_config(config_dict)
 
             return {
@@ -1366,7 +1425,7 @@ async def reload_image_config():
 
 @router.get("/config/image/provider/{provider}")
 async def get_image_provider_config(provider: str):
-    """获取指定服务商的图像配置（返回完整API Key用于前端填充）"""
+    """获取指定服务商的非敏感配置元数据。"""
     if not BATCH_AVAILABLE:
         raise HTTPException(status_code=501, detail="数据库不可用")
 
@@ -1381,12 +1440,13 @@ async def get_image_provider_config(provider: str):
                 "status": "success",
                 "config": {
                     "provider": config.provider,
-                    "api_key": config.api_key,  # 返回完整API Key
+                    "api_key": None,
                     "base_url": config.base_url,
                     "model_name": config.model_name,
                     "endpoint": config.endpoint,
                     "api_version": config.api_version,
-                    "has_api_key": bool(config.api_key)
+                    "has_api_key": bool(config.api_key),
+                    "api_key_preview": _mask_api_key(config.api_key),
                 }
             }
         else:
@@ -1413,7 +1473,7 @@ async def get_image_models(
     print("="*80)
     print(f"📌 参数信息:")
     print(f"  - provider: {provider}")
-    print(f"  - api_key: {api_key[:15]}...{api_key[-5:] if len(api_key) > 20 else '***'} (长度: {len(api_key)})")
+    print(f"  - api_key_configured: {bool(api_key)}")
     print(f"  - base_url: {base_url}")
     print(f"  - api_version: {api_version}")
     print("="*80 + "\n")
@@ -1548,10 +1608,7 @@ async def get_image_models(
             print("─"*80)
             print(f"请求方法: GET")
             print(f"请求URL: {url}")
-            print(f"请求Headers:")
-            print(f"  - Authorization: Bearer {api_key[:15]}...{api_key[-5:] if len(api_key) > 20 else '***'}")
-            print(f"  - Content-Type: {headers['Content-Type']}")
-            print(f"  - 长度: {len(api_key)} 字符")
+            print("请求Headers: Authorization=<redacted>, Content-Type=application/json")
             print("─"*80 + "\n")
 
             # 4. 标准OpenAI格式调用
@@ -1656,5 +1713,12 @@ async def get_image_models(
         }
 
 
-
-
+@router.post("/config/image/models")
+async def post_image_models(request: ModelListRequest):
+    """获取图像模型列表，避免将 API Key 放入 URL 和访问日志。"""
+    return await get_image_models(
+        provider=request.provider,
+        api_key=request.api_key,
+        base_url=request.base_url,
+        api_version=request.api_version,
+    )

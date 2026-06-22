@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
             db_config = await repo.get_active_config()
 
             if db_config and db_config.is_enabled:
-                image_config = repo.to_dict(db_config)
+                image_config = repo.to_dict(db_config, include_secret=True)
                 image_config_loader.set_config(image_config)
                 print(f"✅ [System] 图像识别配置加载完成 (来源: database, {image_config['provider']}/{image_config['model_name']})")
             else:
@@ -135,6 +135,18 @@ async def lifespan(app: FastAPI):
     app.state.llm_config = llm_config
     print(f"✅ [System] LLM配置已保存到 app.state (来源: {llm_config['source']})")
 
+    try:
+        from src.agent_api.routes import configure_customs_authority
+        from src.customs_simulator.routes import (
+            configure_customs_authority as configure_internal_customs_authority,
+        )
+
+        configure_customs_authority(llm_config)
+        configure_internal_customs_authority(llm_config)
+        print("✅ [System] LangGraph 海关模拟智能体已连接当前 LLM")
+    except Exception as e:
+        print(f"⚠️ [System] 海关模拟智能体 LLM 配置失败，将使用确定性降级: {e}")
+
     # 确保导出目录存在（功能三：深度研究工具）
     export_dir = project_root / "data" / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -180,6 +192,24 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+# Mount the unified platform integration layer by default while keeping the
+# legacy routes available for the existing frontend.
+if settings.AGENT_V1_ENABLED:
+    from src.agent_api.middleware import AgentTraceMiddleware
+    from src.agent_api.routes import router as agent_api_router
+
+    app.add_middleware(AgentTraceMiddleware)
+    app.include_router(agent_api_router, prefix="/api/agent/v1")
+    from src.customs_simulator.routes import router as customs_simulator_router
+
+    app.include_router(
+        customs_simulator_router,
+        prefix="/internal/customs-simulator/v1",
+    )
+    print("✅ [System] Agent V1 integration API enabled: /api/agent/v1")
+else:
+    print("ℹ️ [System] Agent V1 integration API disabled (AGENT_V1_ENABLED=false)")
 
 # 挂载下载目录（功能三：深度研究工具导出文件）
 downloads_dir = project_root / "data" / "exports"

@@ -1,0 +1,46 @@
+{
+  "case_version": "1.0",
+  "description": "首次申报缺少型号和用途，海关退单后自动修改并重新申报。",
+  "documents": [
+    {"document_id": "DOC-CONTRACT-002", "document_type": "contract"},
+    {"document_id": "DOC-INVOICE-002", "document_type": "invoice"},
+    {"document_id": "DOC-PACKING-002", "document_type": "packing_list"},
+    {"document_id": "DOC-BL-002", "document_type": "bill_of_lading"}
+  ],
+  "declaration": {
+    "consignee": "上海精工自动化有限公司",
+    "overseas_consignor": "Japan Motion Systems Ltd.",
+    "transport_mode": "海运",
+    "bill_of_lading_no": "MOCKBL20260002",
+    "invoice_no": "INV-2026-002",
+    "contract_no": "CON-2026-002",
+    "packing_list_no": "PL-2026-002",
+    "freight": 1500,
+    "insurance": 300,
+    "goods": [{
+      "item_no": 1,
+      "name": "交流伺服电机",
+      "hs_code": "85015200",
+      "quantity": 20,
+      "quantity_unit": "台",
+      "unit_price": 1800,
+      "total_price": 36000,
+      "gross_weight": 520,
+      "net_weight": 480,
+      "origin_country": "日本",
+      "brand": "MOTION-X",
+      "model": "",
+      "usage": "",
+      "material": "钢、铜及电子组件",
+      "reference_unit_price_min": 1500,
+      "reference_unit_price_max": 2200
+    }]
+  },
+  "automatic_corrections": {
+    "goods[0].model": "MX-SV-7500",
+    "goods[0].usage": "数控机床进给轴驱动"
+  },
+  "exchange_rate": 7.2,
+  "duty_rate": 0.08,
+  "vat_rate": 0.13
+}

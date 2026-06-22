@@ -1,0 +1,35 @@
+{
+  "pack_id": "trade-price-risk",
+  "version": "1.0.0",
+  "enabled": true,
+  "rules": [
+    {
+      "code": "PRICE_STATIONERY_UNIT_VALUE_OUTLIER",
+      "stage": "customs_review",
+      "severity": "high",
+      "blocking": false,
+      "message": "文具类商品申报单价显著高于知识库 Mock 风险阈值，必须核验合同、付款、关联关系和市场价格依据。",
+      "field": "unit_price",
+      "scope": "goods",
+      "all": [
+        {"field": "name", "operator": "regex", "value": "圆珠笔|签字笔|中性笔|文具"},
+        {"field": "unit_price", "operator": "gt", "value": 10}
+      ]
+    },
+    {
+      "code": "PRICE_AML_TRADE_OVERSTATEMENT_RED_FLAG",
+      "stage": "customs_review",
+      "severity": "high",
+      "blocking": false,
+      "message": "低复杂度大批量商品出现异常高报价格，构成贸易型洗钱价格操纵风险线索；该线索不等同于洗钱定性，需升级价格与资金流核查。",
+      "field": "total_price",
+      "scope": "goods",
+      "all": [
+        {"field": "name", "operator": "regex", "value": "圆珠笔|签字笔|中性笔|文具|塑料日用品"},
+        {"field": "quantity", "operator": "gte", "value": 1000},
+        {"field": "unit_price", "operator": "gte", "value": 50},
+        {"field": "total_price", "operator": "gte", "value": 100000}
+      ]
+    }
+  ]
+}

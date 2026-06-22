@@ -48,7 +48,11 @@ function renderImageForm(provider) {
     const state = imageStateCache[provider] || {};
     const preset = (typeof PROVIDER_PRESETS !== 'undefined' ? PROVIDER_PRESETS[provider] : {}) || {};
     
-    document.getElementById('imageApiKey').value = state.apiKey || '';
+    const apiKeyInput = document.getElementById('imageApiKey');
+    apiKeyInput.value = state.apiKey || '';
+    apiKeyInput.placeholder = state.hasApiKey
+        ? '已保存，留空则保留原密钥'
+        : '请输入 API Key';
     document.getElementById('imageBaseUrl').value = state.baseUrl || preset.base_url || '';
     
     const modelSelect = document.getElementById('imageModelName');
@@ -86,12 +90,9 @@ async function fetchImageProviderConfigFromDB(provider) {
         if (result.status === 'success' && result.config) {
             const config = result.config;
             
-            // 拦截脱敏 Key
-            let safeKey = config.api_key || '';
-            if (safeKey.includes('sk-......') || safeKey.includes('****')) safeKey = '';
-
             imageStateCache[provider] = {
-                apiKey: safeKey,
+                apiKey: '',
+                hasApiKey: Boolean(config.has_api_key),
                 baseUrl: config.base_url || preset.base_url || '',
                 modelName: config.model_name || '',
                 temperature: config.temperature !== undefined ? config.temperature : 0.1,
@@ -155,11 +156,9 @@ async function initImageConfig() {
         const provider = config.provider || 'azure';
         document.getElementById('imageProvider').value = provider;
         
-        let safeKey = config.api_key || '';
-        if (safeKey.includes('****') || safeKey.includes('sk-......')) safeKey = '';
-
         imageStateCache[provider] = {
-            apiKey: safeKey,
+            apiKey: '',
+            hasApiKey: Boolean(config.has_api_key),
             baseUrl: config.base_url || '',
             modelName: config.model_name || '',
             temperature: config.temperature !== undefined ? config.temperature : 0.1,
@@ -211,8 +210,16 @@ async function fetchImageModels() {
                 modelSelect.innerHTML = '<option value="">Azure需要 API Key 和 Endpoint</option>';
                 return;
             }
-            let apiUrl = `/api/v1/config/image/models?provider=azure&api_key=${encodeURIComponent(apiKey)}&base_url=${encodeURIComponent(baseUrl)}&api_version=${encodeURIComponent(apiVersion)}`;
-            const response = await fetch(apiUrl);
+            const response = await fetch('/api/v1/config/image/models', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider,
+                    api_key: apiKey,
+                    base_url: baseUrl,
+                    api_version: apiVersion
+                })
+            });
             const result = await response.json();
             if (result.status === 'success') {
                 models = result.models;
@@ -230,11 +237,19 @@ async function fetchImageModels() {
                     return;
                 }
             } else {
-                let apiUrl = `/api/v1/config/image/models?provider=${provider}&api_key=${encodeURIComponent(apiKey)}`;
-                if (baseUrl && (provider === 'custom' || provider === 'siliconflow')) {
-                    apiUrl += `&base_url=${encodeURIComponent(baseUrl)}`;
-                }
-                const response = await fetch(apiUrl);
+                const response = await fetch('/api/v1/config/image/models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider,
+                        api_key: apiKey,
+                        base_url: (
+                            baseUrl && (provider === 'custom' || provider === 'siliconflow')
+                                ? baseUrl
+                                : null
+                        )
+                    })
+                });
                 const result = await response.json();
                 if (result.status === 'success') {
                     models = result.models;
@@ -307,8 +322,9 @@ async function saveImageConfig() {
     const apiKey = document.getElementById('imageApiKey').value.trim();
     const isEnabled = document.getElementById('imageEnabled').checked;
     const modelName = document.getElementById('imageModelName').value;
+    const hasSavedKey = Boolean(imageStateCache[provider]?.hasApiKey);
 
-    if (isEnabled && !apiKey) {
+    if (isEnabled && !apiKey && !hasSavedKey) {
         alert("⚠️ API Key 不能为空！");
         return;
     }
@@ -349,6 +365,10 @@ async function saveImageConfig() {
         if (saveResult.status !== 'success') {
             throw new Error(saveResult.message);
         }
+        if (!imageStateCache[provider]) imageStateCache[provider] = {};
+        imageStateCache[provider].hasApiKey = hasSavedKey || Boolean(apiKey);
+        imageStateCache[provider].apiKey = '';
+        renderImageForm(provider);
 
         const reloadResponse = await fetch('/api/v1/config/image/reload', {
             method: 'POST'

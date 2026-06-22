@@ -8,7 +8,11 @@ from pathlib import Path
 # 使用与 base.py 相同的路径
 DB_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 DB_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE_URL = f"sqlite+aiosqlite:///{DB_DIR}/customs_audit.db"
+DB_PATH = Path(
+    os.getenv("CUSTOMS_AUDIT_DB_PATH", str(DB_DIR / "customs_audit.db"))
+).expanduser().resolve()
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = f"sqlite+aiosqlite:///{DB_PATH.as_posix()}"
 
 # 2. 创建异步引擎 (Engine)
 # echo=True 表示会在控制台打印出它执行的 SQL 语句，方便你调试学习

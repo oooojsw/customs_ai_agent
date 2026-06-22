@@ -133,7 +133,13 @@ class MCPBridge:
             # 使用 exit_stack 托管上下文，防止提早退出断开连接
             print(f"[MCPBridge] 🔸 步骤5: 进入stdio_client上下文")
             print(f"[MCPBridge] 🔸 stdio_client object: {stdio_client}")
-            print(f"[MCPBridge] 🔸 server_params: {server_params}")
+            print(
+                "[MCPBridge] 🔸 server_params: "
+                f"command={server_params.command!r}, "
+                f"args={server_params.args!r}, "
+                f"cwd={server_params.cwd!r}, "
+                f"env_keys={list((server_params.env or {}).keys())}"
+            )
             
             try:
                 read, write = await self._exit_stack.enter_async_context(
@@ -350,15 +356,12 @@ class MCPBridgeManager:
         print(f"[MCPBridgeManager] 🔸 close_all() called")
         print("[MCPBridgeManager] 🔄 正在关闭所有 MCP 桥接器...")
 
-        close_tasks = []
         for name, bridge in self.bridges.items():
             if bridge._initialized:
-                print(f"[MCPBridgeManager] 🔸 adding close task for {name}")
-                close_tasks.append(bridge.close())
-
-        if close_tasks:
-            print(f"[MCPBridgeManager] 🔸 awaiting {len(close_tasks)} close tasks")
-            await asyncio.gather(*close_tasks, return_exceptions=True)
+                print(f"[MCPBridgeManager] 🔸 closing bridge for {name}")
+                # AsyncExitStack/AnyIO cancel scopes must be exited by the same
+                # lifecycle task that entered them. Do not fan out with gather.
+                await bridge.close()
 
         self.bridges.clear()
         self.all_tools.clear()

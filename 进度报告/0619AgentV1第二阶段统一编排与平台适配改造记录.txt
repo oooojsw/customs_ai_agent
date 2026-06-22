@@ -1,0 +1,135 @@
+【2026-06-19】Agent V1 第二阶段统一编排与平台适配改造记录
+========================================================
+
+一、本轮完成
+-----------
+
+1. 协议补齐
+
+- intent 新增 report、declaration_query、regulation_search、batch_audit、full_review。
+- options 新增 output_formats、template_id、require_review、preserve_layout、branch_id。
+- 新增 callback.completed_url。
+- RunSnapshot 新增 context_version 和 usage.duration_ms。
+- OutputKind 新增 template_definition。
+
+2. 统一能力适配
+
+- DeclarationQueryAdapter：复用 DataClient，返回 entry_id、报关文本和 data_source。
+- RegulationSearchAdapter：复用 KnowledgeBase，返回 citations 和 citation_set Output。
+- ReportAdapter：复用 ComplianceReporter，生成报告正文和 DOCX Output。
+- BatchAuditAdapter：复用 BatchProcessor/BatchRepository 创建批量任务。
+- FullReviewAdapter：串联报关查询、OCR、审单、法规检索、报告和 Output。
+
+完整链路通过 options.intent=full_review 显式启用。
+原 chat/audit/ocr 行为不变，避免普通请求意外触发高成本长链路。
+
+3. 平台文件中心适配
+
+- 新增 HttpPlatformFilePublisher。
+- 平台提供上传 URL 和凭证后，可上传生成文件并返回 file_id/preview_url/download_url。
+- 未配置或上传失败时继续使用智能体临时托管。
+
+4. Run 持久化
+
+- 新增 SQLiteRunStore。
+- 已完成 Run、Event、Output、warning、usage 和 context_version 可在服务重启后恢复。
+- 重启时未完成 Run 转为 RUN_INTERRUPTED_BY_RESTART，不伪造继续执行。
+- AGENT_V1_RUN_STORE 可选择 sqlite 或 memory，默认 sqlite。
+
+5. 会话一致性
+
+- 同一 tenant_id + session_id 的 Run 默认串行执行。
+- context_version 过旧返回 SESSION_CONTEXT_CONFLICT。
+- 完成状态、context_version、usage 和终止事件原子提交。
+
+6. 服务鉴权与租户隔离
+
+- 可选 X-Agent-Service-Key 服务鉴权。
+- 平台通过 X-Tenant-ID 声明租户。
+- Run 查询、SSE、取消和本地 Output 下载均校验租户。
+- 默认鉴权关闭，配置 AGENT_V1_AUTH_ENABLED=true 后启用。
+
+7. 回调和可观测性
+
+- callback.completed_url 只允许 HTTPS 和配置白名单 Host。
+- 回调失败记录 CALLBACK_DELIVERY_FAILED，不改变已经完成的业务结果。
+- Agent V1 请求支持 X-Request-ID 透传和自动 trace_id。
+- health 增加 reporter、ocr、file_center 和 run_store 状态。
+
+
+二、平台与我方边界
+-----------------
+
+平台负责建设和运营：
+
+- 用户登录、角色、租户和业务权限。
+- 平台页面和永久会话记录。
+- 附件上传与短期下载 URL。
+- 永久文件中心及其上传接口。
+- SSE 消费、页面展示和真实报关业务接口。
+
+我方只负责接入适配：
+
+- 验证平台传来的服务凭证和租户声明。
+- 下载平台附件。
+- 调用平台已经提供的文件上传接口。
+- 返回平台 file_id 和统一智能体协议。
+- 在平台文件中心不可用时提供临时降级。
+
+因此 HttpPlatformFilePublisher 和 ServiceAuthenticator 是智能体侧连接器，
+不代表我方负责开发平台文件中心、用户系统或平台页面。
+
+
+三、当前降级项
+-------------
+
+- BatchAuditAdapter 当前只创建旧批量任务，尚未把数据库进度持续映射为 tool_progress。
+- Skill 仍通过 CustomsChatAgent 内部 invoke_skill 使用，尚无独立结构化 SkillAdapter。
+- full_review 需要真实 OCR、LLM、知识库和报告服务可用才能完成真实端到端运行。
+- 平台文件上传协议为通用 multipart，联调时需根据平台实际字段调整。
+- SQLiteRunStore 适合单实例；多实例部署需更换 Redis/PostgreSQL。
+- 服务鉴权当前为共享 API Key；正式环境可替换 JWT 或 mTLS。
+- 尚未实现病毒扫描、真实 MIME 嗅探和全局分布式限流。
+- FastAPI 请求模型校验错误仍使用默认 422 格式，尚未全部转换为 AgentError。
+
+
+四、验证
+-------
+
+- compileall：通过。
+- Agent V1 + config 定向测试：43 passed。
+- git diff --check：通过，仅有既有 CRLF/LF 提示。
+
+
+六、演示联调收缩
+---------------
+
+根据当前分工，多模态相关能力暂时由视觉负责人处理，本项目集成侧先保证平台能调通。
+新增 AGENT_V1_DEMO_MODE，默认开启。平台只传 entry_id 或 declaration_text 即可完成：
+
+Run 创建 -> Mock/文本报关数据 -> 演示审单 -> 演示法规依据 -> DOCX 报告 -> SSE -> Output 下载。
+
+最小调用说明见：
+
+接口规范/AgentV1平台演示联调最小调用说明.md
+
+推荐演示环境变量见：
+
+.env.demo.example
+
+
+五、平台联调所需配置
+-------------------
+
+- AGENT_V1_ENABLED=true
+- AGENT_V1_AUTH_ENABLED=true
+- AGENT_V1_SERVICE_API_KEY=双方约定的服务凭证
+- AGENT_V1_ATTACHMENT_ALLOWED_HOSTS=平台附件域名
+- AGENT_V1_USE_PLATFORM_FILES=true
+- AGENT_V1_PLATFORM_FILE_UPLOAD_URL=平台文件上传接口
+- AGENT_V1_PLATFORM_FILE_API_KEY=平台文件接口凭证
+- AGENT_V1_CALLBACK_ALLOWED_HOSTS=平台回调域名
+- AGENT_V1_RUN_STORE=sqlite
+
+平台未提供真实 URL 和凭证前，以上外部连接只能使用 MockTransport 做契约测试，
+不能由智能体项目自行猜测平台接口。

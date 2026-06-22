@@ -1,0 +1,42 @@
+{
+  "case_version": "1.0",
+  "description": "一般贸易进口数字信号处理器，资料完整，正常审单缴税放行。",
+  "documents": [
+    {"document_id": "DOC-CONTRACT-001", "document_type": "contract"},
+    {"document_id": "DOC-INVOICE-001", "document_type": "invoice"},
+    {"document_id": "DOC-PACKING-001", "document_type": "packing_list"},
+    {"document_id": "DOC-BL-001", "document_type": "bill_of_lading"}
+  ],
+  "declaration": {
+    "consignee": "深圳深南电子科技有限公司",
+    "overseas_consignor": "Malaysia Semiconductor Sdn. Bhd.",
+    "transport_mode": "海运",
+    "bill_of_lading_no": "MOCKBL20260001",
+    "invoice_no": "INV-2026-001",
+    "contract_no": "CON-2026-001",
+    "packing_list_no": "PL-2026-001",
+    "freight": 800,
+    "insurance": 120,
+    "goods": [{
+      "item_no": 1,
+      "name": "32位数字信号处理器",
+      "hs_code": "85423100",
+      "quantity": 5000,
+      "quantity_unit": "个",
+      "unit_price": 15,
+      "total_price": 75000,
+      "gross_weight": 55,
+      "net_weight": 50,
+      "origin_country": "马来西亚",
+      "brand": "TI",
+      "model": "TMS320F28335PGFA",
+      "usage": "工业电机控制",
+      "material": "硅基集成电路",
+      "reference_unit_price_min": 12,
+      "reference_unit_price_max": 20
+    }]
+  },
+  "exchange_rate": 7.2,
+  "duty_rate": 0.0,
+  "vat_rate": 0.13
+}

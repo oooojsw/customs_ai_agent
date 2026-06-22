@@ -3,12 +3,14 @@ import httpx
 import asyncio
 import json
 import sys
-import io
 import requests
 import time
 import re
 import shutil
-from typing import List, Optional, Any
+from contextvars import ContextVar
+from typing import Any, List, Literal, Optional
+
+from pydantic import BaseModel, Field, model_validator
 
 # ============================================================
 # ⬇️⬇️⬇️ 【环境配置 - 遵从 1222.txt 修复经验】 ⬇️⬇️⬇️
@@ -18,18 +20,124 @@ os.environ['HF_HUB_DISABLE_SSL_VERIFY'] = '1'
 os.environ['CURL_CA_BUNDLE'] = ''
 
 # 修复 Windows 控制台编码问题，确保控制台输出中文不乱码
-if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if (
+    sys.platform == "win32"
+    and sys.stdout.isatty()
+    and hasattr(sys.stdout, "reconfigure")
+):
+    sys.stdout.reconfigure(encoding="utf-8")
 
-from langgraph.prebuilt import create_react_agent 
+from langgraph.prebuilt import ToolNode, create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.tools import Tool
+from langchain_core.tools import StructuredTool, Tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 # 导入项目配置和业务组件
 from src.config.loader import settings
 from src.core.orchestrator import RiskAnalysisOrchestrator
+from src.customs_simulator.models import DeclarationData, MockDocument
+from src.customs_simulator.service import MockCustomsWorkflowService
+from src.customs_simulator.toolset import DeclarationAgentToolset
+from src.services.agent_tool_errors import (
+    format_agent_tool_error,
+    format_agent_tool_timeout,
+)
+from src.services.tool_execution_policy import (
+    LEVEL_POLICIES,
+    ToolTimeoutLevel,
+    get_tool_policy,
+)
+
+
+class CustomsCaseToolInput(BaseModel):
+    business_case_id: str = Field(
+        min_length=1,
+        description=(
+            "必须来自已存在案件快照或上一工具返回的持久化模拟报关业务编号，"
+            "例如 MOCK-CASE-XXXXXXXXXXXX。继续申报、改单、补件、缴税、放行等操作"
+            "必须先提供该编号并读取 get_case_snapshot，不得另建新单。"
+        ),
+    )
+    request_id: str | None = Field(
+        default=None,
+        description="写操作幂等键；省略时系统按案件版本生成稳定幂等键",
+    )
+
+
+class CustomsCreateCaseToolInput(BaseModel):
+    source_mode: Literal["fixed_fixture", "custom_declaration"] = Field(
+        description=(
+            "案件数据来源。用户提供了具体报关字段并要求申报时必须选择 "
+            "custom_declaration；只有用户明确要求固定演示案例时才可选择 fixed_fixture。"
+        ),
+    )
+    mock_case_id: Literal[
+        "normal_release",
+        "returned_then_release",
+        "high_risk_inspection",
+    ] | None = Field(
+        default=None,
+        description="source_mode=fixed_fixture 时必填的固定案例 ID。",
+    )
+    tenant_id: str = Field(default="default")
+    user_id: str = Field(default="agent-user")
+    session_id: str = Field(default="agent-session")
+    request_id: str | None = Field(
+        default=None,
+        description="建单幂等键；同一租户重复 request_id 返回同一业务单",
+    )
+    declaration: DeclarationData | None = Field(
+        default=None,
+        description=(
+            "一般贸易进口结构化申报数据。goods 必须是数组，每项必须使用 name、hs_code、"
+            "quantity、quantity_unit、unit_price、total_price、gross_weight、net_weight、"
+            "origin_country 等 schema 中定义的字段；不得使用 goods_name 代替 name。"
+        ),
+    )
+    documents: list[MockDocument] = Field(
+        default_factory=list,
+        description=(
+            "结构化合同、发票、装箱单和提运单记录。自定义案件至少应包含 contract、"
+            "invoice、packing_list、bill_of_lading，否则后续 validate_document_set 会失败。"
+        ),
+    )
+    generate_mock_documents: bool = Field(
+        default=False,
+        description=(
+            "只有用户明确同意在模拟环境中根据当前自定义申报生成 Mock 合同、发票、"
+            "装箱单和提运单时才设为 true；生成内容必须与 declaration 绑定。"
+        ),
+    )
+    workflow_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Mock 汇率、税率和查验配置",
+    )
+
+    @model_validator(mode="after")
+    def validate_source_mode(self):
+        if self.source_mode == "fixed_fixture":
+            if not self.mock_case_id:
+                raise ValueError("fixed_fixture requires mock_case_id")
+            if self.declaration is not None:
+                raise ValueError(
+                    "fixed_fixture cannot contain custom declaration"
+                )
+        elif self.declaration is None:
+            raise ValueError("custom_declaration requires declaration")
+        return self
+
+
+class CustomsRunWorkflowToolInput(BaseModel):
+    mock_case_id: Literal[
+        "normal_release",
+        "returned_then_release",
+        "high_risk_inspection",
+    ] = "normal_release"
+    tenant_id: str = Field(default="default")
+    user_id: str = Field(default="agent-user")
+    session_id: str = Field(default="agent-session")
+    request_id: str | None = None
 
 # 导入 AgentState（数据隧道机制）
 try:
@@ -85,6 +193,65 @@ except ImportError as e:
 
 # 初始化内存检查点，用于维护多轮对话状态
 MEMORY = InMemorySaver()
+CURRENT_CUSTOMS_INTAKE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "current_customs_intake",
+    default=None,
+)
+
+
+AGENT_TASK_GOVERNANCE_PROMPT = """
+【最高优先级：当前任务与工具调用边界】
+你是一个由用户目标驱动的通用智能体。系统向你暴露全部工具，是为了让你能够按需解决不同问题，
+并不表示每次请求都要调用全部工具，也不表示你可以自行扩展用户的任务范围。
+
+1. 以用户当前一轮明确提出的目标为准。先判断用户究竟要求你交付什么，再选择完成该目标所需的最少工具。
+2. 工具是可选能力，不是固定流程。不得因为工具可用、输入中出现相关字段，或历史会话曾使用某项能力，就自动调用它。
+3. 数据内容不等于用户意图。报关数据中出现 HS 编码、CIF、价格、币制、税率等字段，不代表用户要求计算税费；
+   出现法规名称不代表用户要求法规检索；出现完整报关单不代表用户要求生成报告或执行全流程。
+4. 用户只要求审单、审计或风险检查时，只执行审单所需操作。不得自行追加税费计算、报告生成、文件导出、
+   报关流程模拟或其他独立任务。审单结论可以指出价格或归类风险，但不得擅自计算具体税额。
+5. 只有用户明确要求计算关税、增值税、总税额、完税价格或税负时，才可调用税费计算技能。
+6. 只有用户明确要求查询法规、政策依据、法律条款，或者当前答案必须引用依据才能成立时，才可调用法规检索。
+   如果只是一般审单，不得把法规检索自动作为审单后的固定下一步。
+7. 只有用户明确要求生成报告、建议书或正式文档时，才可调用报告生成；只有用户明确要求下载、导出或保存文件时，
+   才可调用文件导出。报告生成完成后也不得自动导出，除非用户同时提出导出要求。
+8. 多工具串联只允许两种情况：用户明确提出多个交付目标；或者后一个工具是完成当前目标不可缺少的直接依赖。
+   不得以“可能有帮助”“更加全面”为理由扩展调用链。
+9. 达到用户当前目标后立即停止调用工具并回答。不要主动开启所谓完整流程、全面审查或附加分析。
+10. 如果用户目标存在会显著影响工具选择的歧义，先用一句简短问题确认；不要自行选择范围更大的任务。
+11. 当前轮明确指令高于历史会话中的任务。用户本轮说“只审单”“仅查询”或“不要计算”等限制时，必须严格执行。
+12. 固定工作流由专门的业务入口负责。除非用户明确要求完整流程，否则你不得在通用对话中自行模拟固定工作流。
+13. 当用户明确要求创建、推进或演示进口申报流程时，必须使用模拟报关流程工具；不得只用文字声称已申报、
+    已缴税、已查验或已放行。每次写操作前先读取案件快照和 allowed_actions。
+14. 海关模拟回执是外部裁决，不得擅自改写。所有模拟流程结果必须明确说明为 Mock，不得暗示已向真实海关申报。
+15. `run_mock_import_workflow` 只用于用户明确要求一次性完整演示。用户只要求单步操作时，只调用对应阶段工具。
+16. “继续申报、继续处理、推进这票、下一步”等表达默认指已有案件。若当前输入或上下文没有明确
+    `business_case_id`，必须先询问用户要继续哪一票，或提示用户改用“演示完整进口报关流程”启动固定演示；
+    禁止因为用户说“继续”就调用 `create_import_case` 新建案件。
+17. 新建案件后必须使用同一个 `business_case_id` 继续后续工具；不得在同一轮对话中重复调用
+    `create_import_case`。如果需要完整演示，优先调用 `run_mock_import_workflow`，不要手动拼接几十个单步工具。
+18. 调用 `validate_document_set` 前必须确认案件已经执行 `load_mock_documents`，且自定义案件包含合同、发票、
+    装箱单和提运单。若工具返回 `DOCUMENT_SET_INCOMPLETE`，向用户说明缺失单证并停止，不得继续伪造申报。
+19. 工具返回包含 `"ok": false` 或 `tool_error` 时，必须将其视为失败观察，绝不能声称工具已成功。先根据
+    `recovery_hint` 纠正参数或读取案件快照；同一个工具、同一个错误码最多只允许纠正后重试一次。
+20. 如果重试一次后仍是同一错误、错误标记为 `retryable=false`、或缺少继续所需的用户数据，立即停止工具调用，
+    用简洁语言说明当前案件 ID、失败步骤、需要补充的内容。禁止无限重试或继续调用后续状态工具。
+21. 工具异常不会自动代表整个案件失败。已有 `business_case_id` 时保留案件并优先调用 `get_case_snapshot`
+    确认当前持久化状态；只有 allowed_actions 允许时才继续。不要因单步失败重新创建案件。
+22. 用户已经提供报关单号、品名、HS、数量、单价、总价或原产国时，创建案件必须使用
+    `source_mode=custom_declaration` 并把这些字段原样写入 declaration。禁止使用 fixed_fixture，禁止借用
+    `normal_release` 的单证、商品或税率替代用户数据。
+23. 自定义案件创建成功后立即读取快照，核对 `case_source=custom_declaration`、
+    `input_declaration_summary` 与用户输入一致。任何品名、HS、数量、价格或原产国不一致都必须停止。
+24. 归类工具返回的商品或 HS 与案件申报不一致时，必须作为数据一致性错误停止；严禁说“不过没关系”后继续。
+25. 最终回答中的品名、HS、金额、税费和状态只能来自最新案件快照和回执，不得把用户原文与其他案件结果拼接。
+26. `pre_audit_declaration` 返回 `risk_detected=true` 时，必须逐项说明命中的风险码和核查要求；
+    `blocking=false` 仅表示流程可继续，不代表“无风险”或“审单通过”。
+27. 创建自定义案件时严格按 `create_import_case` 工具 schema 组装 `declaration.goods`；用户未提供的
+    单证编号、运输方式、重量等模拟必填字段可使用明确的 Mock 占位值，但不得改动已绑定的用户字段。
+    参数校验失败时只依据工具 schema 修正一次，禁止调用文件、目录或源码读取工具寻找参数格式。
+""".strip()
+
 
 class CustomsChatAgent:
     def __init__(self, kb=None, llm_config: dict = None):
@@ -137,6 +304,8 @@ class CustomsChatAgent:
         self.mcp_tools = []
         self.agent = None  # 延迟初始化智能体，等待 MCP 工具加载完成
         self._opencode_context_by_session = {}
+        self._customs_intake_by_session: dict[str, dict[str, Any]] = {}
+        self._customs_tool_locks: dict[str, asyncio.Lock] = {}
 
         # ========== 货币代码映射表（用于汇率查询工具） ==========
         self.CURRENCY_MAP = {
@@ -279,7 +448,10 @@ class CustomsChatAgent:
             name="audit_declaration",
             func=lambda x: "此工具仅支持异步环境运行", # 占位，防止初始化报错
             coroutine=audit_declaration_tool,      # 实际异步逻辑
-            description="全自动报关风险扫描工具。能检测要素完整性、敏感物项、价格逻辑、归类一致性及单证一致性。"
+            description=(
+                "报关风险审单工具，检测要素完整性、敏感物项、价格逻辑、归类一致性及单证一致性。"
+                "仅在用户明确要求审单、审计或风险检查时调用；该工具不负责计算具体税费、生成报告或导出文件。"
+            )
         ))
 
         # RAG 知识库检索工具
@@ -300,7 +472,10 @@ class CustomsChatAgent:
             self.tools.append(Tool(
                 name="search_customs_regulations",
                 func=retrieve_docs,
-                description="查询海关相关法规、政策文件、HS编码解释。遇到专业名词或法律疑问时必须使用。"
+                description=(
+                    "查询海关相关法规、政策文件和 HS 编码解释。仅在用户明确要求法规依据、政策查询、"
+                    "条款解释，或当前回答必须引用依据时调用；不得作为普通审单后的固定步骤。"
+                )
             ))
 
         # --- 4.5 初始化技能管理器 ---
@@ -334,6 +509,177 @@ class CustomsChatAgent:
         from pathlib import Path
         self.export_dir = Path("data/exports")
         self.export_dir.mkdir(parents=True, exist_ok=True)
+
+        # ========== 持久化模拟报关全链路工具 ==========
+        self.customs_workflow = MockCustomsWorkflowService(
+            settings.MOCK_CUSTOMS_DB_PATH,
+            settings.MOCK_CUSTOMS_FIXTURE_DIR,
+        )
+        self.customs_workflow.configure_authority(self.config)
+        self.customs_toolset = DeclarationAgentToolset(self.customs_workflow)
+        customs_tool_descriptions = {
+            "create_import_case": (
+                "仅用于创建一票新的持久化一般贸易进口模拟业务。用户说继续申报、继续处理、"
+                "下一步或推进上一票时禁止调用本工具，必须先要求 business_case_id 并调用 "
+                "get_case_snapshot。必须显式传 source_mode；用户已提供具体申报字段时只能使用 "
+                "custom_declaration。禁止静默回退 normal_release。自定义案件必须提供完整 documents，"
+                "或在用户明确同意模拟单证时设置 generate_mock_documents=true。"
+            ),
+            "get_case_snapshot": (
+                "读取已有模拟报关案件完整快照、当前 stage、allowed_actions 和最新回执。"
+                "任何继续、推进、改单、补件、缴税、放行前都必须先调用。"
+            ),
+            "load_mock_documents": (
+                "只允许在 DRAFT 且 allowed_actions 包含 LOAD_DOCUMENTS 时调用，"
+                "为固定案例或自定义案件加载结构化 Mock 单证。"
+            ),
+            "validate_document_set": (
+                "只允许在 DOCUMENTS_READY 后调用，检查合同、发票、装箱单、提运单完整性、金额和重量勾稽。"
+                "若返回 DOCUMENT_SET_INCOMPLETE，必须停下说明缺失材料，不得继续申报。"
+            ),
+            "normalize_declaration_data": (
+                "只读取并标准化当前案件申报数据，不推进海关状态；必须传已有 business_case_id。"
+            ),
+            "classify_goods": (
+                "根据当前案件结构化商品资料生成 HS 候选和归类置信度；不是建单工具。"
+            ),
+            "validate_declaration_elements": (
+                "检查 HS 格式、型号、用途和申报要素；必须在已有案件资料加载后调用。"
+            ),
+            "check_regulatory_requirements": (
+                "检查当前案件监管条件和许可证信息；只在用户要求流程推进或合规检查时调用。"
+            ),
+            "estimate_customs_tax": (
+                "估算当前案件 Mock 完税价格和进口税费；只有流程演示或用户明确要求估税时调用。"
+            ),
+            "pre_audit_declaration": (
+                "执行申报前规则审单，不推进海关状态；若存在阻断问题，必须先处理问题。"
+            ),
+            "build_declaration_draft": (
+                "只允许预审通过后生成版本化申报草稿；不得跳过资料验证和预审。"
+            ),
+            "amend_declaration": (
+                "只用于 RETURNED 等海关要求改单阶段，根据退单回执生成新申报版本。"
+            ),
+            "compare_declaration_versions": "比较最近两个不可变申报版本，通常在改单后向用户说明变化。",
+            "submit_customs_declaration": (
+                "只允许 READY_TO_SUBMIT 且 allowed_actions 允许时，向后台海关模拟智能体正式提交当前申报版本。"
+            ),
+            "process_customs_acceptance": "只处理已提交申报的海关模拟受理窗口，不得用于未提交案件。",
+            "query_customs_case": "查询当前海关状态、允许动作和最新事件；不改变状态。",
+            "start_customs_review": "只允许 ACCEPTED 后启动海关模拟审单。",
+            "process_customs_review": "只允许 UNDER_REVIEW 后执行海关风险、价格、许可证和查验判断。",
+            "submit_supplementary_materials": "只允许 SUPPLEMENT_REQUIRED 阶段提交补充材料。",
+            "respond_to_price_query": "只允许 PRICE_QUERY 阶段提交合同、发票和折扣依据答复价格质疑。",
+            "confirm_license_information": "只允许 LICENSE_REVIEW 阶段提交并核验 Mock 许可证信息。",
+            "schedule_mock_inspection": "只允许 INSPECTION_REQUIRED 阶段安排模拟查验。",
+            "submit_inspection_result": "只允许 INSPECTION_SCHEDULED 阶段完成模拟查验并保存查验记录。",
+            "assess_mock_customs_tax": "只在审单或查验完成且允许核税时核定模拟税费。",
+            "issue_mock_tax_bill": "只允许 TAX_ASSESSED 后生成模拟税单并进入待缴税状态。",
+            "pay_mock_customs_tax": "只允许 PAYMENT_PENDING 阶段缴纳模拟税费并生成支付流水。",
+            "release_mock_goods": "只允许 TAX_PAID 且放行条件满足时生成模拟放行。",
+            "query_release_status": "查询是否已经放行；不改变状态。",
+            "confirm_mock_pickup": "只允许 RELEASED 后模拟港区提货。",
+            "close_import_case": "只允许 PICKED_UP 后完成模拟结关归档。",
+            "get_customs_process_timeline": "获取平台可展示的完整流程时间线；不改变状态。",
+            "generate_case_archive": "生成整票案件结构化归档；通常在 CLOSED 后调用。",
+            "generate_customs_demo_report": "生成模拟报关全过程报告数据；通常在 CLOSED 后调用。",
+            "run_mock_import_workflow": (
+                "显式运行一票完整一般贸易进口模拟。只有用户明确要求完整、全流程、全过程演示时调用。"
+                "这是稳定演示入口；不要在通用对话里用多个单步工具手搓完整流程。"
+            ),
+        }
+        self._customs_tool_names = set(customs_tool_descriptions)
+        for operation, description in customs_tool_descriptions.items():
+            if operation == "create_import_case":
+                def execute_customs_create_tool(
+                    source_mode: str,
+                    mock_case_id: str | None = None,
+                    tenant_id: str = "default",
+                    user_id: str = "agent-user",
+                    session_id: str = "agent-session",
+                    request_id: str | None = None,
+                    declaration: DeclarationData | None = None,
+                    documents: list[MockDocument] | None = None,
+                    generate_mock_documents: bool = False,
+                    workflow_config: dict[str, Any] | None = None,
+                ) -> str:
+                    payload = {
+                        "source_mode": source_mode,
+                        "mock_case_id": mock_case_id,
+                        "tenant_id": tenant_id,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "request_id": request_id,
+                        "declaration": (
+                            declaration.model_dump(mode="json")
+                            if declaration is not None
+                            else None
+                        ),
+                        "documents": [
+                            document.model_dump(mode="json")
+                            for document in (documents or [])
+                        ],
+                        "generate_mock_documents": generate_mock_documents,
+                        "workflow_config": workflow_config or {},
+                    }
+                    self._validate_customs_create_request(payload)
+                    return self.customs_toolset.invoke(
+                        "create_import_case",
+                        payload,
+                    )
+
+                tool_func = execute_customs_create_tool
+                args_schema = CustomsCreateCaseToolInput
+            elif operation == "run_mock_import_workflow":
+                def execute_customs_workflow_tool(
+                    mock_case_id: str = "normal_release",
+                    tenant_id: str = "default",
+                    user_id: str = "agent-user",
+                    session_id: str = "agent-session",
+                    request_id: str | None = None,
+                ) -> str:
+                    return self.customs_toolset.invoke(
+                        "run_mock_import_workflow",
+                        {
+                            "mock_case_id": mock_case_id,
+                            "tenant_id": tenant_id,
+                            "user_id": user_id,
+                            "session_id": session_id,
+                            "request_id": request_id,
+                        },
+                    )
+
+                tool_func = execute_customs_workflow_tool
+                args_schema = CustomsRunWorkflowToolInput
+            else:
+                def execute_customs_case_tool(
+                    business_case_id: str,
+                    request_id: str | None = None,
+                    operation_name: str = operation,
+                ) -> str:
+                    return self.customs_toolset.invoke(
+                        operation_name,
+                        {
+                            "business_case_id": business_case_id,
+                            "request_id": request_id,
+                        },
+                    )
+
+                tool_func = execute_customs_case_tool
+                args_schema = CustomsCaseToolInput
+
+            self.tools.append(
+                StructuredTool.from_function(
+                    name=operation,
+                    func=tool_func,
+                    args_schema=args_schema,
+                    description=(
+                        description
+                        + " 所有结果均为 Mock。不得在普通咨询中自动调用。"
+                    ),
+                )
+            )
 
         # ========== 汇率查询工具 ==========
         def query_exchange_rate_tool(query: str) -> str:
@@ -792,22 +1138,26 @@ create a concise markdown note proving the OpenCode child agent wrote it, save i
                         stderr=asyncio.subprocess.PIPE,
                     )
                     base_url = f"http://127.0.0.1:{port}"
-                    async with httpx.AsyncClient(timeout=2.0) as client:
-                        for _ in range(40):
-                            if proc.returncode is not None:
-                                stderr = await proc.stderr.read() if proc.stderr else b""
-                                last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
-                                break
-                            try:
-                                response = await client.get(
-                                    f"{base_url}/session/status",
-                                    params={"directory": project_root},
-                                )
-                                if response.status_code < 500:
-                                    return proc, base_url
-                            except Exception as exc:
-                                last_error = str(exc)
-                            await asyncio.sleep(0.25)
+                    try:
+                        async with httpx.AsyncClient(timeout=2.0) as client:
+                            for _ in range(40):
+                                if proc.returncode is not None:
+                                    stderr = await proc.stderr.read() if proc.stderr else b""
+                                    last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
+                                    break
+                                try:
+                                    response = await client.get(
+                                        f"{base_url}/session/status",
+                                        params={"directory": project_root},
+                                    )
+                                    if response.status_code < 500:
+                                        return proc, base_url
+                                except Exception as exc:
+                                    last_error = str(exc)
+                                await asyncio.sleep(0.25)
+                    except asyncio.CancelledError:
+                        await stop_opencode_process(proc)
+                        raise
                     await stop_opencode_process(proc)
                 raise RuntimeError(f"failed to start opencode server: {last_error}")
 
@@ -1307,10 +1657,12 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
         self.system_prompt_text = f"""
 你是一名智慧口岸AI专家，负责报关咨询和自动审单。
 
-【核心工作守则】
-1. 审计：用户粘贴报关单后，主动调用 `audit_declaration`。
-2. 咨询：法律疑问调用 `search_customs_regulations`。
-3. 协同：审单发现风险后，可检索法规条文来支撑你的解释。
+{AGENT_TASK_GOVERNANCE_PROMPT}
+
+【专业能力规则】
+1. 审单：用户明确要求审单、审计或风险检查时，调用 `audit_declaration`。
+2. 咨询：用户明确要求法规、政策或条款依据时，调用 `search_customs_regulations`。
+3. 协同：需要多项能力时，严格按照用户明确提出的交付目标选择工具，不得默认扩展为完整业务流程。
 4. 语言：严禁跳出用户当前使用的语言（中文或越南语）。
 
 {skills_section}
@@ -1367,15 +1719,112 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
     def _create_agent(self) -> None:
         """内部方法：创建 LangGraph 智能体"""
         try:
+            self._apply_tool_execution_policies()
+            tool_node = ToolNode(
+                self.tools,
+                handle_tool_errors=format_agent_tool_error,
+            )
             self.agent = create_react_agent(
                 model=self.llm,
-                tools=self.tools,
+                tools=tool_node,
                 checkpointer=MEMORY,
             )
             print(f"[ChatAgent] ✅ 智能体就绪，工具列表: {[t.name for t in self.tools]}")
         except Exception as e:
             print(f"[ChatAgent] ❌ 创建智能体失败: {str(e)}")
             self.agent = None
+
+    def _tool_timeout_seconds(self, level: ToolTimeoutLevel) -> float:
+        setting_name = f"AGENT_TOOL_TIMEOUT_{level.value}_SECONDS"
+        default = LEVEL_POLICIES[level].timeout_seconds
+        return max(1.0, float(getattr(settings, setting_name, default)))
+
+    def _apply_tool_execution_policies(self) -> None:
+        """Attach the configured timeout to every registered tool once."""
+        wrapped_tools = []
+        for tool in self.tools:
+            if getattr(tool, "_execution_policy_wrapped", False):
+                wrapped_tools.append(tool)
+                continue
+            tool_name = str(tool.name)
+            policy = get_tool_policy(tool_name)
+            timeout_seconds = self._tool_timeout_seconds(policy.level)
+            original_coroutine = getattr(tool, "coroutine", None)
+            original_func = getattr(tool, "func", None)
+
+            async def guarded_tool(
+                *args,
+                _tool_name=tool_name,
+                _policy=policy,
+                _timeout=timeout_seconds,
+                _coroutine=original_coroutine,
+                _func=original_func,
+                **kwargs,
+            ):
+                async def invoke_tool():
+                    if _coroutine is not None:
+                        return await _coroutine(*args, **kwargs)
+                    if _func is None:
+                        raise RuntimeError(f"TOOL_NOT_EXECUTABLE: {_tool_name}")
+                    return await asyncio.to_thread(_func, *args, **kwargs)
+
+                case_id = str(kwargs.get("business_case_id") or "").strip()
+                lock = None
+                if case_id and _tool_name in self._customs_tool_names:
+                    lock = self._customs_tool_locks.setdefault(
+                        case_id,
+                        asyncio.Lock(),
+                    )
+                try:
+                    if lock is not None:
+                        async with lock:
+                            return await asyncio.wait_for(
+                                invoke_tool(), timeout=_timeout
+                            )
+                    return await asyncio.wait_for(
+                        invoke_tool(), timeout=_timeout
+                    )
+                except asyncio.TimeoutError:
+                    return format_agent_tool_timeout(
+                        _tool_name,
+                        _timeout,
+                        level=_policy.level.value,
+                    )
+
+            metadata = {
+                **(getattr(tool, "metadata", None) or {}),
+                "timeout_level": policy.level.value,
+                "timeout_seconds": timeout_seconds,
+            }
+            common = {
+                "name": tool_name,
+                "description": tool.description,
+                "return_direct": tool.return_direct,
+                "args_schema": tool.args_schema,
+                "response_format": tool.response_format,
+                "tags": getattr(tool, "tags", None),
+                "metadata": metadata,
+                "handle_tool_error": getattr(tool, "handle_tool_error", False),
+                "handle_validation_error": getattr(
+                    tool, "handle_validation_error", False
+                ),
+            }
+            if isinstance(tool, StructuredTool):
+                wrapped = StructuredTool.from_function(
+                    func=original_func,
+                    coroutine=guarded_tool,
+                    infer_schema=False,
+                    **common,
+                )
+            else:
+                wrapped = Tool(
+                    func=original_func,
+                    coroutine=guarded_tool,
+                    **common,
+                )
+            object.__setattr__(wrapped, "_execution_policy_wrapped", True)
+            wrapped_tools.append(wrapped)
+        self.tools = wrapped_tools
 
     async def shutdown(self) -> None:
         """关闭 Agent 并清理资源"""
@@ -1469,6 +1918,109 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
             )
         return user_input
 
+    @staticmethod
+    def _extract_customs_intake(user_input: str) -> dict[str, Any]:
+        text = str(user_input or "")
+
+        def text_value(label_pattern: str) -> str:
+            match = re.search(
+                rf"(?:{label_pattern})\s*[：:]\s*([^\r\n]+)",
+                text,
+                re.IGNORECASE,
+            )
+            return match.group(1).strip() if match else ""
+
+        def number_value(label_pattern: str) -> float | None:
+            raw = text_value(label_pattern)
+            match = re.search(r"-?[\d,]+(?:\.\d+)?", raw)
+            return float(match.group(0).replace(",", "")) if match else None
+
+        claims = {
+            "entry_id": text_value(r"报关单号|申报单号"),
+            "goods_name": text_value(r"货物名称|商品名称|品名"),
+            "hs_code": re.sub(r"\D", "", text_value(r"HS\s*编码|HS\s*Code")),
+            "quantity": number_value(r"数量"),
+            "unit_price": number_value(r"单价"),
+            "total_price": number_value(r"总价|总金额"),
+            "origin_country": text_value(r"原产国|原产地"),
+        }
+        meaningful = {
+            key: value
+            for key, value in claims.items()
+            if value not in {"", None}
+        }
+        return meaningful if len(meaningful) >= 2 else {}
+
+    @staticmethod
+    def _normalize_claim_text(value: Any) -> str:
+        return re.sub(r"[\s（）()\-_/，,。.;；:：]", "", str(value or "")).lower()
+
+    def _validate_customs_create_request(
+        self, payload: dict[str, Any]
+    ) -> None:
+        intake = CURRENT_CUSTOMS_INTAKE.get() or {}
+        claims = dict(intake.get("claims") or {})
+        source_mode = str(payload.get("source_mode") or "")
+        if (
+            claims
+            and source_mode == "fixed_fixture"
+            and not intake.get("allow_fixed_fixture")
+        ):
+            raise ValueError(
+                "CUSTOMS_INPUT_SOURCE_MISMATCH: 用户已提供具体申报数据，"
+                "不得回退到固定案例"
+            )
+        if source_mode != "custom_declaration" or not claims:
+            return
+        declaration = payload.get("declaration")
+        if not isinstance(declaration, dict):
+            raise ValueError("CUSTOM_DECLARATION_REQUIRED")
+        goods = declaration.get("goods") or []
+        if not goods or not isinstance(goods[0], dict):
+            raise ValueError("CUSTOM_GOODS_REQUIRED")
+        first = goods[0]
+        mismatches: list[str] = []
+        text_fields = {
+            "entry_id": declaration.get("entry_id"),
+            "goods_name": first.get("name"),
+            "hs_code": first.get("hs_code"),
+            "origin_country": first.get("origin_country"),
+        }
+        for field_name, actual in text_fields.items():
+            expected = claims.get(field_name)
+            if expected in {None, ""}:
+                continue
+            expected_text = self._normalize_claim_text(expected)
+            actual_text = self._normalize_claim_text(actual)
+            if (
+                not actual_text
+                or expected_text not in actual_text
+                and actual_text not in expected_text
+            ):
+                mismatches.append(field_name)
+        number_fields = {
+            "quantity": first.get("quantity"),
+            "unit_price": first.get("unit_price"),
+            "total_price": first.get("total_price"),
+        }
+        for field_name, actual in number_fields.items():
+            expected = claims.get(field_name)
+            if expected is None:
+                continue
+            try:
+                actual_number = float(actual)
+            except (TypeError, ValueError):
+                mismatches.append(field_name)
+                continue
+            tolerance = max(0.01, abs(float(expected)) * 0.0001)
+            if abs(actual_number - float(expected)) > tolerance:
+                mismatches.append(field_name)
+        if mismatches:
+            raise ValueError(
+                "CUSTOMS_INPUT_DECLARATION_MISMATCH: "
+                + ",".join(sorted(set(mismatches)))
+            )
+
     def _verify_opencode_artifact(self, opencode_result: str) -> str:
         match = re.search(r"OPENCODE_ARTIFACT_PATH:\s*(.+)", opencode_result or "")
         if not match:
@@ -1521,6 +2073,23 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
         """
         核心流式分发器
         """
+        extracted_intake = self._extract_customs_intake(user_input)
+        if extracted_intake:
+            self._customs_intake_by_session[session_id] = extracted_intake
+        intake_claims = self._customs_intake_by_session.get(session_id, {})
+        intake_token = CURRENT_CUSTOMS_INTAKE.set(
+            {
+                "claims": intake_claims,
+                "allow_fixed_fixture": bool(
+                    re.search(
+                        r"固定(?:演示)?案例|normal_release|"
+                        r"returned_then_release|high_risk_inspection",
+                        user_input,
+                        re.IGNORECASE,
+                    )
+                ),
+            }
+        )
         try:
             # 检查 agent 是否已初始化
             if not self.agent:
@@ -1559,13 +2128,25 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
             
             # 使用动态系统提示词
             dynamic_prompt = self._get_dynamic_system_prompt(self.system_prompt_text)
+            if intake_claims:
+                dynamic_prompt += (
+                    "\n\n【程序绑定的当前申报输入】\n"
+                    + json.dumps(intake_claims, ensure_ascii=False)
+                    + "\n创建自定义案件时，declaration 必须与上述字段一致；"
+                    "禁止改用固定案例。"
+                )
             lang_inst = self._get_language_instruction(language)
             input_messages = [
                 SystemMessage(content=f"{dynamic_prompt}\n\n{lang_inst}"),
                 HumanMessage(content=user_input)
             ]
 
-            config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
+            # Recursion limit is a graph safety ceiling, not a tool-error retry budget.
+            # A customs run can legitimately use dozens of model/tool super-steps.
+            config = {
+                "configurable": {"thread_id": session_id},
+                "recursion_limit": 100,
+            }
             has_sent_content = False
             is_in_tool_call = False  # 🔥 工具调用状态标志
 
@@ -1596,6 +2177,34 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
                     reasoning = add_kwargs.get('reasoning_content', '')
                     if reasoning:
                         yield f"data: {json.dumps({'type': 'thinking', 'content': reasoning}, ensure_ascii=False)}\n\n"
+
+                elif event_type == "on_chat_model_end":
+                    output = event["data"].get("output")
+                    message = getattr(output, "message", output)
+                    response_metadata = (
+                        getattr(message, "response_metadata", {}) or {}
+                    )
+                    tool_calls = list(getattr(message, "tool_calls", []) or [])
+                    invalid_tool_calls = list(
+                        getattr(message, "invalid_tool_calls", []) or []
+                    )
+                    content = getattr(message, "content", "") or ""
+                    if not isinstance(content, str):
+                        content = str(content)
+                    metadata = event.get("metadata") or {}
+                    diagnostic = {
+                        "type": "model_end",
+                        "finish_reason": response_metadata.get("finish_reason"),
+                        "tool_call_count": len(tool_calls),
+                        "tool_call_names": [
+                            str(call.get("name") or "") for call in tool_calls
+                        ],
+                        "invalid_tool_call_count": len(invalid_tool_calls),
+                        "content_tail": content[-160:],
+                        "graph_step": metadata.get("langgraph_step"),
+                        "graph_node": metadata.get("langgraph_node"),
+                    }
+                    yield f"data: {json.dumps(diagnostic, ensure_ascii=False)}\n\n"
 
                 elif event_type == "on_tool_start":
                     t_name = event["name"]
@@ -1658,12 +2267,30 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
 
                     # 获取工具执行结果
                     tool_output = event["data"].get("output", "")
+                    if hasattr(tool_output, "content"):
+                        tool_output = getattr(tool_output, "content", "")
                     # 格式化工具结果（限制长度，避免过长）
                     if isinstance(tool_output, str):
                         tool_result = tool_output[:2000] + "..." if len(tool_output) > 2000 else tool_output
                     else:
                         tool_result = str(tool_output)[:2000]
-                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': t_name, 'content': f'工具 [{t_name}] 调用完毕', 'tool_result': tool_result}, ensure_ascii=False)}\n\n"
+                    tool_failed = False
+                    try:
+                        parsed_tool_result = json.loads(tool_result)
+                        tool_failed = (
+                            isinstance(parsed_tool_result, dict)
+                            and parsed_tool_result.get("ok") is False
+                        )
+                    except Exception:
+                        tool_failed = False
+                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': t_name, 'status': 'error' if tool_failed else 'success', 'content': f'工具 [{t_name}] 调用失败' if tool_failed else f'工具 [{t_name}] 调用完毕', 'tool_result': tool_result}, ensure_ascii=False)}\n\n"
+
+                elif event_type == "on_tool_error":
+                    t_name = event["name"]
+                    is_in_tool_call = False
+                    error = event["data"].get("error")
+                    tool_result = format_agent_tool_error(error if isinstance(error, Exception) else Exception(str(error)))
+                    yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': t_name, 'status': 'error', 'content': f'工具 [{t_name}] 调用失败', 'tool_result': tool_result}, ensure_ascii=False)}\n\n"
 
             if not has_sent_content:
                 # 保底
@@ -1678,6 +2305,8 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
             import traceback
             traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'content': f'系统异常: {str(e)}'}, ensure_ascii=False)}\n\n"
+        finally:
+            CURRENT_CUSTOMS_INTAKE.reset(intake_token)
 
     def _get_language_instruction(self, language: str) -> str:
         names = {"zh": "简体中文", "vi": "Tiếng Việt"}
