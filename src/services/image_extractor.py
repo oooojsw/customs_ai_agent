@@ -6,6 +6,11 @@ from openai import AzureOpenAI, OpenAI
 from fastapi import UploadFile
 
 from src.config.loader import settings
+from src.services.document_models import (
+    DocumentResult, DocumentType, ConfidenceLevel,
+    FieldEvidence, TableResult, CellResult,
+    classify_confidence, needs_review,
+)
 
 # 自定义异常
 class NotDeclarationError(ValueError):
@@ -222,6 +227,314 @@ class ImageTextExtractor:
                 f"主模型 ({self._provider}/{self._model}): {error_type}: {error_msg}\n"
                 f"备用模型: Azure OpenAI {'未配置' if not self._azure_client else '也失败了'}"
             ) from primary_error
+
+    def extract_document(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> DocumentResult:
+        """核心方法 V2：返回统一的 DocumentResult 结构化数据。
+
+        内部调用 VLM 进行文档分类 + 字段提取 + 置信度评估，
+        输出对齐 src/services/document_models.py 的 DocumentResult 模型。
+
+        Args:
+            image_bytes: 图片字节数据
+            mime_type: 图片 MIME 类型
+            language: 输出语言
+
+        Returns:
+            DocumentResult 包含文档类型、字段列表、原始文本和置信度
+        """
+        import time
+        start_time = time.time()
+
+        print(f"[DEBUG] ========== 开始图片识别 (DocumentResult 模式) ==========")
+        print(f"[DEBUG] Provider: {self._provider}, Model: {self._model}")
+        print(f"[DEBUG] Language: {language}, Size: {len(image_bytes)} bytes")
+
+        # 1. 调用 VLM 获取结构化 JSON
+        raw_text = None
+        model_used = self._model
+        primary_error = None
+
+        try:
+            print(f"[INFO] 调用 {self._provider} 进行文档识别...")
+
+            if self._provider == "gemini":
+                raw_text = self._call_gemini_vision_document(image_bytes, mime_type, language)
+                model_used = self._gemini_model
+            elif self._provider == "azure":
+                if not self._azure_client:
+                    raise RuntimeError("Azure OpenAI 客户端未初始化")
+                raw_text = self._call_azure_openai_vision_document(image_bytes, mime_type, language)
+                model_used = self._azure_deployment
+            elif self._provider in ["deepseek", "openai", "qwen", "zhipu", "siliconflow", "custom"]:
+                if not self._openai_client:
+                    raise RuntimeError(f"{self._provider} 客户端未初始化")
+                raw_text = self._call_openai_compatible_vision_document(image_bytes, mime_type, language)
+                model_used = self._model
+            else:
+                raise ValueError(f"不支持的 provider: {self._provider}")
+
+        except Exception as e:
+            primary_error = e
+            print(f"[ERROR] {self._provider} 识别失败: {type(e).__name__}: {str(e)}")
+
+            # 降级到备用模型
+            if self._azure_client and self._provider != "azure":
+                print(f"[INFO] 降级到 Azure OpenAI...")
+                try:
+                    raw_text = self._call_azure_openai_vision_document(image_bytes, mime_type, language)
+                    model_used = f"Azure-{self._azure_deployment}"
+                except Exception as az_e:
+                    print(f"[ERROR] 降级也失败: {az_e}")
+                    raise RuntimeError(
+                        f"文档识别失败: 主模型 {self._provider}/{self._model}: {primary_error}; "
+                        f"备用 Azure: {az_e}"
+                    ) from primary_error
+            else:
+                raise
+
+        if not raw_text:
+            raise RuntimeError("VLM 返回空响应")
+
+        # 2. 解析 VLM JSON 响应 → DocumentResult
+        doc = self._parse_document_response(
+            raw_text, image_bytes, mime_type, language, model_used,
+            int((time.time() - start_time) * 1000),
+        )
+
+        print(f"[SUCCESS] 文档识别完成: type={doc.document_type.value}, "
+              f"fields={len(doc.fields)}, tables={len(doc.tables)}, "
+              f"confidence={doc.confidence.value}")
+        print(f"[DEBUG] ========== 识别完成 ==========\n")
+        return doc
+
+    # ------------------------------------------------------------------
+    # Document 模式 VLM 调用（使用统一提示词，请求结构化 JSON）
+    # ------------------------------------------------------------------
+
+    def _build_document_prompt(self, language: str = "zh") -> str:
+        """构建文档识别统一提示词 — 请求 JSON 结构化输出。"""
+        lang_instr = self._get_language_instruction(language)
+
+        if language == "vi":
+            return (
+                f"{lang_instr}\n\n"
+                "Bạn là chuyên gia phân tích chứng từ hải quan. Phân tích hình ảnh này.\n\n"
+                "【Nhiệm vụ 1 — Phân loại chứng từ】\n"
+                "declaration / invoice / packing_list / certificate / general_image / unknown\n\n"
+                "【Nhiệm vụ 2 — Nếu là chứng từ, trích xuất các trường sau】\n"
+                "Với mỗi trường: field_name, original_text, standard_value, confidence_score (0.0-1.0)\n"
+                "Các trường: entry_id, hs_code, goods_name, quantity, unit, unit_price, "
+                "total_price, currency, origin_country, declaration_elements, invoice_total\n\n"
+                "【Nhiệm vụ 3 — Nếu là ảnh thường, mô tả nội dung và liệt kê hàng hóa】\n\n"
+                "Trả về CHỈ JSON (không Markdown):\n"
+                '{{"document_type":"...","fields":[{{"field_name":"...","original_text":"...",'
+                '"standard_value":"...","confidence_score":0.9,"notes":""}}],'
+                '"description":"...","items":[],"category":"...","tags":[],'
+                '"customs_relevance":"high/medium/low/none","overall_confidence":0.85,"notes":""}}'
+            )
+        else:
+            return (
+                f"{lang_instr}\n\n"
+                "你是海关单证分析专家。请分析这张图片。\n\n"
+                "【任务1 — 文档分类】判断类型：\n"
+                "declaration(报关单) / invoice(发票) / packing_list(装箱单) / "
+                "certificate(原产地证) / general_image(普通图片) / unknown\n\n"
+                "【任务2 — 如是单证，提取以下字段】\n"
+                "对每个字段提供: field_name, original_text(OCR原文), standard_value(标准化值), "
+                "confidence_score(0.0-1.0), notes\n"
+                "可提取字段: entry_id(报关单号), hs_code(HS编码), goods_name(货物名称), "
+                "quantity(数量), unit(单位), unit_price(单价), total_price(总价), "
+                "currency(币种), origin_country(原产国), declaration_elements(申报要素), "
+                "invoice_total(发票总额)\n\n"
+                "【任务3 — 如是普通图片，描述内容并列物品】\n"
+                "每个物品: name, category(电子产品/纺织品/机械设备/食品/原材料/包装材料/化工产品/其他), "
+                "quantity, attributes, confidence(high/medium/low)\n\n"
+                "严格只返回 JSON（不要 Markdown 代码块标记）：\n"
+                '{"document_type":"...","fields":[{...}],"description":"...","items":[{...}],'
+                '"category":"...","tags":[],"customs_relevance":"high/medium/low/none",'
+                '"overall_confidence":0.85,"notes":""}'
+            )
+
+    def _call_gemini_vision_document(self, image_bytes: bytes, mime_type: str, language: str) -> str:
+        """Gemini Vision — Document 模式"""
+        prompt = self._build_document_prompt(language)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        api_url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._gemini_model}:generateContent?key={self._api_key}"
+        )
+        payload = {
+            "contents": [{"parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": mime_type, "data": image_b64}},
+            ]}],
+            "generationConfig": {"temperature": self._temperature, "maxOutputTokens": self._max_tokens},
+        }
+        print(f"[DEBUG] 调用 Gemini Document API: {self._gemini_model}")
+        response = requests.post(api_url, json=payload, timeout=60, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    def _call_azure_openai_vision_document(self, image_bytes: bytes, mime_type: str, language: str) -> str:
+        """Azure OpenAI — Document 模式"""
+        if not self._azure_client:
+            raise RuntimeError("Azure OpenAI 客户端未初始化")
+        prompt = self._build_document_prompt(language)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        image_url = f"data:{mime_type};base64,{image_b64}"
+        response = self._azure_client.chat.completions.create(
+            model=self._azure_deployment,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]}],
+            max_tokens=self._max_tokens, temperature=self._temperature,
+        )
+        return response.choices[0].message.content.strip()
+
+    def _call_openai_compatible_vision_document(self, image_bytes: bytes, mime_type: str, language: str) -> str:
+        """OpenAI 兼容 — Document 模式"""
+        if not self._openai_client:
+            raise RuntimeError(f"{self._provider} 客户端未初始化")
+        prompt = self._build_document_prompt(language)
+        image_b64 = base64.b64encode(image_bytes).decode("ascii")
+        image_url = f"data:{mime_type};base64,{image_b64}"
+        response = self._openai_client.chat.completions.create(
+            model=self._model,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]}],
+            max_tokens=self._max_tokens, temperature=self._temperature,
+        )
+        return response.choices[0].message.content.strip()
+
+    def _parse_document_response(
+        self, raw_text: str, image_bytes: bytes, mime_type: str,
+        language: str, model_used: str, processing_time_ms: int,
+    ) -> DocumentResult:
+        """将 VLM 返回的 JSON 文本解析为 DocumentResult。"""
+        import re as _re
+
+        # 1. 解析 JSON
+        parsed = None
+        try:
+            parsed = json.loads(raw_text)
+        except json.JSONDecodeError:
+            m = _re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw_text, _re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group(1))
+                except json.JSONDecodeError:
+                    pass
+            if parsed is None:
+                brace_start = raw_text.find("{")
+                brace_end = raw_text.rfind("}")
+                if brace_start >= 0 and brace_end > brace_start:
+                    try:
+                        parsed = json.loads(raw_text[brace_start:brace_end + 1])
+                    except json.JSONDecodeError:
+                        pass
+
+        if parsed is None:
+            # 无法解析，返回原始文本作为描述
+            return DocumentResult(
+                document_id=f"doc_{len(image_bytes)}_{hash(raw_text[:50]) & 0xFFFF:04x}",
+                document_type=DocumentType.UNKNOWN,
+                raw_text=raw_text[:1000],
+                model_used=model_used,
+                processing_time_ms=processing_time_ms,
+                warnings=["VLM 返回格式不符合预期，已保留原始文本"],
+            )
+
+        # 2. 确定文档类型
+        doc_type_str = parsed.get("document_type", "unknown")
+        try:
+            doc_type = DocumentType(doc_type_str)
+        except ValueError:
+            doc_type = DocumentType.UNKNOWN
+
+        # 3. 构建字段
+        fields = []
+        for f in parsed.get("fields", []):
+            fname = f.get("field_name", "")
+            score = float(f.get("confidence_score", 0.80))
+            is_crit = fname in {"entry_id", "hs_code", "total_price", "currency", "quantity"}
+            conf = classify_confidence(score, is_crit)
+            fields.append(FieldEvidence(
+                field_name=fname,
+                original_text=f.get("original_text", ""),
+                standard_value=f.get("standard_value", ""),
+                confidence=conf,
+                confidence_score=score,
+                needs_review=needs_review(conf, is_crit),
+                is_critical=is_crit,
+                notes=f.get("notes", ""),
+            ))
+
+        # 4. 构建物品表格（从 items 转换）
+        items = parsed.get("items", [])
+        tables = []
+        if items:
+            headers = ["序号", "物品名称", "类别", "数量", "特征", "置信度"]
+            cells = []
+            for i, item in enumerate(items):
+                row = i + 2
+                data = [
+                    str(i + 1),
+                    str(item.get("name", "")),
+                    str(item.get("category", "")),
+                    str(item.get("quantity", "")),
+                    str(item.get("attributes", "")),
+                    str(item.get("confidence", "medium")),
+                ]
+                for col, text in enumerate(data):
+                    conf_str = item.get("confidence", "medium") if col == 5 else "high"
+                    cells.append(CellResult(
+                        row=row, column=col + 1, text=text,
+                        confidence=ConfidenceLevel(conf_str if conf_str in ("high","medium","low") else "medium"),
+                        confidence_score=0.90 if conf_str == "high" else (0.70 if conf_str == "medium" else 0.40),
+                        cell_id=f"R{row}C{col+1}",
+                    ))
+            for col_idx, h in enumerate(headers):
+                cells.append(CellResult(row=1, column=col_idx + 1, text=h,
+                                        confidence=ConfidenceLevel.HIGH, confidence_score=1.0,
+                                        cell_id=f"R1C{col_idx+1}"))
+            tables.append(TableResult(
+                table_id="items_table",
+                caption=parsed.get("description", "")[:100],
+                rows=len(items) + 1, columns=len(headers),
+                headers=headers, cells=cells,
+            ))
+
+        # 5. 组装 DocumentResult
+        overall_conf = float(parsed.get("overall_confidence", 0.80))
+        warnings_list = []
+        if doc_type == DocumentType.UNKNOWN:
+            warnings_list.append("图片类型无法确定，结果仅供参考")
+        if not fields and not items:
+            warnings_list.append("未识别到结构化字段或物品")
+
+        return DocumentResult(
+            document_id=f"doc_{hash(raw_text[:50]) & 0xFFFFFFFF:08x}",
+            document_type=doc_type,
+            tables=tables,
+            fields=fields,
+            raw_text=parsed.get("description", raw_text[:500]),
+            confidence=classify_confidence(overall_conf, False),
+            page_count=1,
+            model_used=model_used,
+            processing_time_ms=processing_time_ms,
+            warnings=warnings_list,
+            metadata={
+                "category": parsed.get("category", ""),
+                "tags": parsed.get("tags", []),
+                "customs_relevance": parsed.get("customs_relevance", ""),
+                "notes": parsed.get("notes", ""),
+                "language": language,
+            },
+        )
 
     def _validate_image_content(self, image_bytes: bytes, mime_type: str, language: str = "zh") -> Tuple[bool, str]:
         """
