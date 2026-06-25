@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI
 
+from src.config.loader import settings
 from src.core.orchestrator import RiskAnalysisOrchestrator
 from src.services.data_client import DataClient
 from src.customs_simulator.models import CustomsStage
@@ -123,6 +124,8 @@ class ChatAdapter:
             )
 
         answer_parts: list[str] = []
+        outputs: list[AgentOutput] = []
+        warnings: list[AgentError] = []
         active_legacy_tools: set[str] = set()
         latest_customs_case_id: str | None = None
         await emitter.status("chatting", "智能体正在处理请求")
@@ -144,6 +147,15 @@ class ChatAdapter:
                 if tool_name in active_legacy_tools:
                     continue
                 active_legacy_tools.add(tool_name)
+                if tool_name == "delegate_to_opencode":
+                    await emitter.emit(
+                        EventType.SUBAGENT_STARTED,
+                        subagent="opencode",
+                        tool=tool_name,
+                        display_name="OpenCode 子智能体",
+                        interaction_kind="subagent",
+                        auto_expand=True,
+                    )
                 await emitter.tool_started(
                     tool_name,
                     str(payload.get("display_name") or tool_name),
@@ -156,6 +168,13 @@ class ChatAdapter:
                 tool_name = str(payload.get("tool_name") or "unknown_tool")
                 active_legacy_tools.discard(tool_name)
                 tool_result = str(payload.get("tool_result") or "")
+                parsed_tool_result: dict[str, Any] | None = None
+                try:
+                    candidate = json.loads(tool_result)
+                    if isinstance(candidate, dict):
+                        parsed_tool_result = candidate
+                except json.JSONDecodeError:
+                    parsed_tool_result = None
                 case_match = re.search(r"MOCK-CASE-[A-Z0-9]+", tool_result)
                 if case_match:
                     latest_customs_case_id = case_match.group(0)
@@ -173,6 +192,63 @@ class ChatAdapter:
                     auto_expand=payload.get("auto_expand") is True,
                     customs_reply=payload.get("customs_reply"),
                 )
+                if (
+                    tool_name == "delegate_to_opencode"
+                    and parsed_tool_result is not None
+                ):
+                    await emitter.emit(
+                        EventType.SUBAGENT_FINISHED,
+                        subagent="opencode",
+                        tool=tool_name,
+                        task_id=parsed_tool_result.get("task_id"),
+                        session_id=parsed_tool_result.get("session_id"),
+                        status=parsed_tool_result.get("status"),
+                        ok=parsed_tool_result.get("ok") is True,
+                        summary=str(parsed_tool_result.get("summary") or "")[:1000],
+                        verification=parsed_tool_result.get("verification") or [],
+                        error=parsed_tool_result.get("error"),
+                    )
+                    if parsed_tool_result.get("ok") is not True:
+                        error_payload = parsed_tool_result.get("error")
+                        message = str(
+                            (error_payload or {}).get("message")
+                            if isinstance(error_payload, dict)
+                            else parsed_tool_result.get("summary")
+                            or "子智能体执行失败"
+                        )
+                        warnings.append(
+                            AgentError(
+                                error_code=(
+                                    str(error_payload.get("error_code"))
+                                    if isinstance(error_payload, dict)
+                                    and error_payload.get("error_code")
+                                    else "SUBAGENT_FAILED"
+                                ),
+                                message=message[:1000],
+                                retryable=(
+                                    bool(error_payload.get("retryable"))
+                                    if isinstance(error_payload, dict)
+                                    else True
+                                ),
+                                stage="subagent",
+                                details={
+                                    "subagent": parsed_tool_result.get("subagent"),
+                                    "task_id": parsed_tool_result.get("task_id"),
+                                    "session_id": parsed_tool_result.get("session_id"),
+                                },
+                            )
+                        )
+                    elif parsed_tool_result.get("ok") is True:
+                        created_outputs, created_warnings = (
+                            await self._publish_subagent_artifacts(
+                                parsed_tool_result,
+                                request,
+                                context,
+                                emitter,
+                            )
+                        )
+                        outputs.extend(created_outputs)
+                        warnings.extend(created_warnings)
             elif event_type == "model_end":
                 await emitter.emit(
                     EventType.STATUS_CHANGED,
@@ -266,7 +342,94 @@ class ChatAdapter:
         return AdapterResult(
             final_answer=final_answer,
             structured_result=structured_result,
+            outputs=outputs,
+            warnings=warnings,
         )
+
+    async def _publish_subagent_artifacts(
+        self,
+        tool_result: dict[str, Any],
+        request: CreateRunRequest,
+        context: ExecutionContext,
+        emitter: EventEmitter,
+    ) -> tuple[list[AgentOutput], list[AgentError]]:
+        if context.output_manager is None:
+            return [], []
+        outputs: list[AgentOutput] = []
+        warnings: list[AgentError] = []
+        project_root = Path(settings.BASE_DIR).resolve()
+        data_root = (project_root / "data").resolve()
+        for artifact in tool_result.get("artifacts") or []:
+            if not isinstance(artifact, dict):
+                continue
+            rel_path = str(artifact.get("path") or "").replace("\\", "/").lstrip("./")
+            if not rel_path:
+                continue
+            source_path = (project_root / rel_path).resolve()
+            try:
+                source_path.relative_to(data_root)
+            except ValueError:
+                warnings.append(
+                    AgentError(
+                        error_code="SUBAGENT_ARTIFACT_PATH_REJECTED",
+                        message=f"子智能体产物路径越界，已拒绝发布: {rel_path}",
+                        retryable=False,
+                        stage="subagent_artifact_publish",
+                    )
+                )
+                continue
+            if not source_path.is_file():
+                warnings.append(
+                    AgentError(
+                        error_code="SUBAGENT_ARTIFACT_MISSING",
+                        message=f"子智能体产物不存在，无法发布: {rel_path}",
+                        retryable=True,
+                        stage="subagent_artifact_publish",
+                    )
+                )
+                continue
+            ext = source_path.suffix.lower().lstrip(".") or "bin"
+            kind = self._output_kind_for_extension(ext)
+            output, warning = await context.output_manager.publish_file(
+                source_path=source_path,
+                tenant_id=request.session.tenant_id,
+                kind=kind,
+                format=ext,
+                name=source_path.name,
+                mime_type=artifact.get("mime_type"),
+                source_tool="delegate_to_opencode",
+                metadata={
+                    "source": "subagent",
+                    "subagent": tool_result.get("subagent"),
+                    "task_id": tool_result.get("task_id"),
+                    "session_id": tool_result.get("session_id"),
+                    "original_path": rel_path,
+                    "sha256_reported": artifact.get("sha256"),
+                },
+                prefer_platform=request.options.output_file_policy
+                == "upload_to_platform",
+            )
+            outputs.append(output)
+            await emitter.emit(
+                EventType.OUTPUT_CREATED,
+                output=output.model_dump(mode="json"),
+            )
+            if warning:
+                warnings.append(warning)
+        return outputs, warnings
+
+    @staticmethod
+    def _output_kind_for_extension(ext: str) -> OutputKind:
+        ext = ext.lower()
+        if ext in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return OutputKind.IMAGE
+        if ext in {"xlsx", "xls", "csv", "tsv"}:
+            return OutputKind.SPREADSHEET
+        if ext in {"zip", "rar", "7z"}:
+            return OutputKind.ARCHIVE
+        if ext in {"json", "yaml", "yml"}:
+            return OutputKind.STRUCTURED_DATA
+        return OutputKind.DOCUMENT
 
 
 class AuditAdapter:

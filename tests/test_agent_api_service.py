@@ -63,6 +63,13 @@ class ToolFailureAdapter:
         raise RuntimeError("模拟工具异常")
 
 
+class CancellableToolAdapter:
+    async def execute(self, request, app, emitter, context):
+        await emitter.tool_started("long_tool", "长任务工具")
+        await asyncio.sleep(60)
+        return AdapterResult(final_answer="不应完成")
+
+
 async def wait_for_terminal(service: AgentRunService, run_id: str):
     for _ in range(200):
         snapshot = await service.store.get(run_id)
@@ -228,6 +235,46 @@ def test_cancel_waits_for_adapter_cleanup():
     asyncio.run(scenario())
 
 
+def test_cancel_closes_active_tool_before_cancelled_event():
+    async def scenario():
+        store = InMemoryRunStore()
+        service = AgentRunService(
+            store=store,
+            adapters={"chat": CancellableToolAdapter()},
+            heartbeat_seconds=60,
+            cancel_grace_seconds=1,
+        )
+        response = await service.create_run(
+            make_request(request_id="req-cancel-active-tool-001"),
+            FastAPI(),
+        )
+        await asyncio.sleep(0.01)
+
+        snapshot = await service.cancel_run(response.run_id)
+        events = await store.events_after(response.run_id)
+        relevant = [
+            event
+            for event in events
+            if event.event
+            in {
+                EventType.TOOL_STARTED,
+                EventType.TOOL_FINISHED,
+                EventType.AGENT_CANCELLED,
+            }
+        ]
+
+        assert snapshot.status == RunStatus.CANCELLED
+        assert [event.event for event in relevant] == [
+            EventType.TOOL_STARTED,
+            EventType.TOOL_FINISHED,
+            EventType.AGENT_CANCELLED,
+        ]
+        assert relevant[1].data["status"] == "error"
+        assert relevant[1].data["summary"] == "智能体任务已取消"
+
+    asyncio.run(scenario())
+
+
 def test_complete_and_cancel_race_has_only_one_terminal_event():
     async def scenario():
         store = InMemoryRunStore()
@@ -316,6 +363,29 @@ def test_failed_run_closes_active_tool_before_terminal_event():
         ]
         assert relevant[1].data["status"] == "error"
         assert relevant[1].data["summary"] == "模拟工具异常"
+
+    asyncio.run(scenario())
+
+
+def test_close_active_tools_is_noop_after_terminal_race():
+    async def scenario():
+        store = InMemoryRunStore()
+        request = make_request(request_id="req-terminal-close-active-001")
+        snapshot, _ = await store.create(request)
+        await store.set_status(snapshot.run_id, RunStatus.RUNNING)
+        from src.agent_api.events import EventEmitter
+
+        emitter = EventEmitter(store, snapshot.run_id)
+        await emitter.tool_started("race_tool", "竞态工具")
+        await store.cancel_with_event(snapshot.run_id)
+
+        await emitter.close_active_tools_as_failed("已经取消")
+
+        events = await store.events_after(snapshot.run_id)
+        assert [event.event for event in events] == [
+            EventType.TOOL_STARTED,
+            EventType.AGENT_CANCELLED,
+        ]
 
     asyncio.run(scenario())
 

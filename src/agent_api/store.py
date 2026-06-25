@@ -211,6 +211,14 @@ class InMemoryRunStore:
             record.condition.notify_all()
             return record.snapshot.model_copy(deep=True)
 
+    async def request_cancellation(self, run_id: str) -> RunSnapshot:
+        record = self._get_record(run_id)
+        async with record.condition:
+            if record.snapshot.status not in TERMINAL_STATUSES:
+                record.cancellation_requested = True
+                record.condition.notify_all()
+            return record.snapshot.model_copy(deep=True)
+
     async def is_cancellation_requested(self, run_id: str) -> bool:
         record = self._get_record(run_id)
         async with record.condition:

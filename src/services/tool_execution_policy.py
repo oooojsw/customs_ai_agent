@@ -69,7 +69,10 @@ RUN_TIMEOUT_BY_INTENT: dict[str, int] = {
     "batch_audit": 600,
     "full_review": 600,
     "mock_import_declaration": 300,
-    "auto": 900,
+    # The unified auto entrypoint may select any registered capability,
+    # including an L5 child agent. Individual tools still keep their own
+    # shorter tier deadlines, so this is only the parent run ceiling.
+    "auto": 3600,
 }
 
 

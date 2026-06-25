@@ -106,7 +106,7 @@ class AgentRunService:
             if event.event == EventType.CUSTOMS_PROCESS_UPDATED
             and event.data.get("business_case_id")
         ]
-        await self.store.cancel_with_event(run_id)
+        await self.store.request_cancellation(run_id)
         task = self._tasks.get(run_id)
         if task and not task.done():
             task.cancel()
@@ -114,6 +114,7 @@ class AgentRunService:
                 await asyncio.wait_for(task, timeout=self.cancel_grace_seconds)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+        snapshot = await self.store.cancel_with_event(run_id)
         if customs_case_ids:
             adapter = self.adapters.get("mock_import_declaration")
             workflow = getattr(adapter, "workflow", None)
@@ -137,7 +138,7 @@ class AgentRunService:
                     # The run is already cancelled; cleanup reconciliation is
                     # best-effort and must not turn cancel into a 500 response.
                     pass
-        return await self.store.get(run_id)
+        return snapshot
 
     async def _execute_run(
         self,

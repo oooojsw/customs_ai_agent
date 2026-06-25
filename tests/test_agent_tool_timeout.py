@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import time
 
@@ -10,6 +11,7 @@ from src.services.agent_tool_errors import (
     format_agent_tool_timeout,
 )
 from src.services.chat_agent import CustomsChatAgent
+from src.services.subagent_runtime import OpenCodeSubagentRunner
 from src.services.tool_execution_policy import (
     ToolTimeoutLevel,
     get_default_run_timeout,
@@ -121,3 +123,15 @@ def test_timeout_policy_levels_and_run_defaults():
     assert get_default_run_timeout("mock_import_declaration") == 300
     assert get_default_run_timeout("audit") == 600
     assert get_default_run_timeout("report") == 1200
+    assert get_default_run_timeout("auto") == 3600
+
+
+def test_opencode_delegation_has_one_managed_timeout_path():
+    chat_agent_source = inspect.getsource(CustomsChatAgent)
+    runner_source = inspect.getsource(OpenCodeSubagentRunner)
+
+    assert "_should_delegate_to_opencode" not in chat_agent_source
+    assert "httpx.Timeout(240.0" not in chat_agent_source
+    assert "httpx.Timeout(240.0" not in runner_source
+    assert "read=None" in runner_source
+    assert "OpenCodeSubagentRunner" in chat_agent_source

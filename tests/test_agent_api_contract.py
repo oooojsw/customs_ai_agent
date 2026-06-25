@@ -17,6 +17,7 @@ from src.agent_api.models import (
     EventType,
     OutputKind,
 )
+from src.agent_api.outputs import LocalOutputRegistry, OutputManager
 from src.agent_api import routes as agent_routes
 from src.agent_api.routes import router
 from src.agent_api.service import AgentRunService
@@ -156,6 +157,153 @@ def test_run_service_emits_output_created_for_adapter_outputs():
         assert outputs[0]["kind"] == "document"
         assert "platform_file_id" in outputs[0]
         assert outputs[0]["platform_file_id"] is None
+
+    asyncio.run(scenario())
+
+
+def test_chat_adapter_maps_subagent_artifact_to_output_created(tmp_path, monkeypatch):
+    async def scenario():
+        project_root = tmp_path / "project"
+        artifact = project_root / "data" / "opencode_outputs" / "proof.md"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("由 OpenCode 子智能体生成", encoding="utf-8")
+        monkeypatch.setattr(
+            "src.agent_api.adapters.settings.BASE_DIR",
+            project_root,
+        )
+
+        result_payload = {
+            "ok": True,
+            "subagent": "opencode",
+            "task_id": "subtask-test",
+            "status": "completed",
+            "session_id": "oc-session-1",
+            "summary": "已生成文件",
+            "artifacts": [
+                {
+                    "path": "data/opencode_outputs/proof.md",
+                    "size_bytes": artifact.stat().st_size,
+                    "mime_type": "text/markdown",
+                    "sha256": "0" * 64,
+                }
+            ],
+            "verification": ["主智能体已验证文件存在"],
+        }
+
+        class FakeAgent:
+            async def chat_stream(self, *_args, **_kwargs):
+                yield (
+                    'data: {"type":"tool_start","tool_name":"delegate_to_opencode"}\n\n'
+                )
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "tool_end",
+                            "tool_name": "delegate_to_opencode",
+                            "status": "success",
+                            "tool_result": json.dumps(
+                                result_payload, ensure_ascii=False
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+                yield 'data: {"type":"answer","content":"完成"}\n\n'
+
+        app = FastAPI()
+        app.state.agent = FakeAgent()
+        store = InMemoryRunStore()
+        request = make_request(
+            request_id="req-subagent-output-001",
+            options={
+                "intent": "chat",
+                "output_file_policy": "agent_temporary",
+            },
+        )
+        snapshot, _ = await store.create(request)
+        emitter = EventEmitter(store, snapshot.run_id)
+        output_manager = OutputManager(
+            LocalOutputRegistry(tmp_path / "agent_outputs")
+        )
+
+        adapter_result = await ChatAdapter().execute(
+            request,
+            app,
+            emitter,
+            ExecutionContext(output_manager=output_manager),
+        )
+        events = await store.events_after(snapshot.run_id)
+
+        assert adapter_result.outputs
+        assert any(event.event == EventType.SUBAGENT_STARTED for event in events)
+        assert any(event.event == EventType.SUBAGENT_FINISHED for event in events)
+        output_events = [
+            event for event in events if event.event == EventType.OUTPUT_CREATED
+        ]
+        assert len(output_events) == 1
+        assert output_events[0].data["output"]["source_tool"] == "delegate_to_opencode"
+        assert output_events[0].data["output"]["agent_output_url"]
+
+    asyncio.run(scenario())
+
+
+def test_chat_adapter_maps_failed_subagent_result_to_warning():
+    async def scenario():
+        result_payload = {
+            "ok": False,
+            "subagent": "opencode",
+            "task_id": "subtask-failed",
+            "status": "failed",
+            "summary": "local opencode command was not found in PATH",
+            "error": {
+                "error_code": "OPENCODE_NOT_FOUND",
+                "message": "local opencode command was not found in PATH",
+                "retryable": False,
+            },
+        }
+
+        class FakeAgent:
+            async def chat_stream(self, *_args, **_kwargs):
+                yield (
+                    'data: {"type":"tool_start","tool_name":"delegate_to_opencode"}\n\n'
+                )
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "tool_end",
+                            "tool_name": "delegate_to_opencode",
+                            "status": "success",
+                            "tool_result": json.dumps(
+                                result_payload, ensure_ascii=False
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n\n"
+                )
+                yield 'data: {"type":"answer","content":"子任务失败，已返回原因"}\n\n'
+
+        app = FastAPI()
+        app.state.agent = FakeAgent()
+        store = InMemoryRunStore()
+        request = make_request(request_id="req-subagent-warning-001")
+        snapshot, _ = await store.create(request)
+        emitter = EventEmitter(store, snapshot.run_id)
+
+        adapter_result = await ChatAdapter().execute(
+            request,
+            app,
+            emitter,
+            ExecutionContext(),
+        )
+        events = await store.events_after(snapshot.run_id)
+
+        assert adapter_result.warnings
+        assert adapter_result.warnings[0].error_code == "OPENCODE_NOT_FOUND"
+        assert any(event.event == EventType.SUBAGENT_FINISHED for event in events)
 
     asyncio.run(scenario())
 

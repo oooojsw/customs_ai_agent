@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .errors import AgentApiException
 from .models import AgentEvent, EventType, utc_now
 from .store import InMemoryRunStore
 
@@ -76,14 +77,21 @@ class EventEmitter:
     ) -> None:
         active_tools = list(self._active_tools.items())
         for tool, details in active_tools:
-            await self.tool_finished(
-                tool,
-                str(details.get("display_name") or tool),
-                summary,
-                status="error",
-                interaction_kind=str(details.get("interaction_kind") or "agent_tool"),
-                auto_expand=bool(details.get("auto_expand", False)),
-            )
+            try:
+                await self.tool_finished(
+                    tool,
+                    str(details.get("display_name") or tool),
+                    summary,
+                    status="error",
+                    interaction_kind=str(
+                        details.get("interaction_kind") or "agent_tool"
+                    ),
+                    auto_expand=bool(details.get("auto_expand", False)),
+                )
+            except AgentApiException as exc:
+                if exc.error.error_code == "RUN_ALREADY_TERMINAL":
+                    return
+                raise
 
 
 def format_sse(event: AgentEvent) -> str:

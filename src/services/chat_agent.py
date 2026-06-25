@@ -6,7 +6,6 @@ import sys
 import requests
 import time
 import re
-import shutil
 from contextvars import ContextVar
 from typing import Any, List, Literal, Optional
 
@@ -42,6 +41,10 @@ from src.customs_simulator.toolset import DeclarationAgentToolset
 from src.services.agent_tool_errors import (
     format_agent_tool_error,
     format_agent_tool_timeout,
+)
+from src.services.subagent_runtime import (
+    OpenCodeSubagentRunner,
+    SubagentTaskRequest,
 )
 from src.services.tool_execution_policy import (
     LEVEL_POLICIES,
@@ -328,7 +331,6 @@ class CustomsChatAgent:
         self.mcp_bridge_manager = None
         self.mcp_tools = []
         self.agent = None  # 延迟初始化智能体，等待 MCP 工具加载完成
-        self._opencode_context_by_session = {}
         self._customs_intake_by_session: dict[str, dict[str, Any]] = {}
         self._customs_tool_locks: dict[str, asyncio.Lock] = {}
 
@@ -1059,205 +1061,38 @@ Never put the user request, script name, payload, or JSON arguments inside skill
 
         async def delegate_to_opencode_tool(task: str) -> str:
             """Start an OpenCode child session and inject parent-built context + task."""
-            raw_task = (task or "").strip()
-            if not raw_task:
-                return "Error: task is required."
-
-            model = ""
-            agent_name = "build"
-            parsed_task = raw_task
             try:
-                parsed = json.loads(raw_task)
-                if isinstance(parsed, dict):
-                    parsed_task = str(parsed.get("task") or parsed.get("prompt") or "").strip()
-                    model = str(parsed.get("model") or "").strip()
-                    agent_name = str(parsed.get("agent") or "build").strip() or "build"
-            except Exception:
-                parsed_task = raw_task
-
-            if not parsed_task:
-                return "Error: task is required."
-
-            opencode_path = shutil.which("opencode")
-            if not opencode_path:
-                return "Error: local opencode command was not found in PATH."
-
-            project_root = os.getcwd()
-            output_dir = os.path.join(project_root, "data", "opencode_outputs")
-            os.makedirs(output_dir, exist_ok=True)
-            run_dir = os.path.join(project_root, "data", "opencode_runs")
-            os.makedirs(run_dir, exist_ok=True)
-
-            background_prompt = f"""
-You are OpenCode, a local child coding agent invoked by the parent Customs AI assistant.
-The parent assistant has already decided to delegate this task to you.
-
-BACKGROUND CONTEXT
-- Project: an automatic customs declaration assistant for audit, compliance research,
-  local skills, MCP filesystem tools, and report/export workflows.
-- Project root: {project_root}
-- The parent agent is the user-facing customs AI. You are not the parent; you are a
-  subordinate execution agent and must report results back to the parent.
-- You may inspect and edit files inside this project only.
-- Do not modify the local OpenCode installation, OpenCode source package, global OpenCode
-  configuration, files outside this project, or unrelated user files.
-- Do not modify .opencode/, AGENTS.md, AGENTS-opencode.md, startup scripts, or source code
-  unless the current task explicitly asks for that exact change.
-- For proof/artifact tasks, write files only under: {output_dir}
-- If you create a file, your final response must include exactly one line:
-  OPENCODE_ARTIFACT_PATH: data/opencode_outputs/<filename>
-- Do not ask what the task is. The task is supplied in the user message below.
-- If the task is safe but underspecified, choose a small reasonable implementation and proceed.
-""".strip()
-
-            task_prompt = f"""
-CURRENT TASK
-{parsed_task}
-
-Execute the task now. Do not merely say you are ready. Do not ask the parent to restate
-this task. If the task asks you to create/write/save a file and does not specify content,
-create a concise markdown note proving the OpenCode child agent wrote it, save it as
-`data/opencode_outputs/opencode_child_note.md`, and return the OPENCODE_ARTIFACT_PATH line.
-""".strip()
-
-            async def stop_opencode_process(proc: Any) -> None:
-                if not proc or proc.returncode is not None:
-                    return
-                if sys.platform == "win32":
-                    killer = await asyncio.create_subprocess_exec(
-                        "taskkill",
-                        "/T",
-                        "/F",
-                        "/PID",
-                        str(proc.pid),
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await killer.communicate()
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=5)
-                    except Exception:
-                        pass
-                    return
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except Exception:
-                    proc.kill()
-
-            async def start_opencode_server() -> tuple[asyncio.subprocess.Process, str]:
-                last_error = ""
-                for port in range(4096, 4110):
-                    cmd = [
-                        opencode_path,
-                        "serve",
-                        "--hostname",
-                        "127.0.0.1",
-                        "--port",
-                        str(port),
-                    ]
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        cwd=project_root,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                    )
-                    base_url = f"http://127.0.0.1:{port}"
-                    try:
-                        async with httpx.AsyncClient(timeout=2.0) as client:
-                            for _ in range(40):
-                                if proc.returncode is not None:
-                                    stderr = await proc.stderr.read() if proc.stderr else b""
-                                    last_error = stderr.decode("utf-8", errors="ignore")[-1000:]
-                                    break
-                                try:
-                                    response = await client.get(
-                                        f"{base_url}/session/status",
-                                        params={"directory": project_root},
-                                    )
-                                    if response.status_code < 500:
-                                        return proc, base_url
-                                except Exception as exc:
-                                    last_error = str(exc)
-                                await asyncio.sleep(0.25)
-                    except asyncio.CancelledError:
-                        await stop_opencode_process(proc)
-                        raise
-                    await stop_opencode_process(proc)
-                raise RuntimeError(f"failed to start opencode server: {last_error}")
-
-            def extract_text(response_json: Any) -> str:
-                parts = response_json.get("parts") if isinstance(response_json, dict) else []
-                text_parts = []
-                if isinstance(parts, list):
-                    for part in parts:
-                        if isinstance(part, dict) and part.get("type") == "text" and part.get("text"):
-                            text_parts.append(str(part["text"]).strip())
-                if text_parts:
-                    return "\n".join([p for p in text_parts if p]).strip()
-                return json.dumps(response_json, ensure_ascii=False)[-4000:]
-
-            proc = None
-            try:
-                proc, base_url = await start_opencode_server()
-                async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=10.0)) as client:
-                    create_resp = await client.post(
-                        f"{base_url}/session",
-                        params={"directory": project_root},
-                        json={
-                            "title": "Customs AI delegated OpenCode task",
-                            "permission": [
-                                {"permission": "edit", "pattern": "*", "action": "allow"},
-                                {"permission": "bash", "pattern": "*", "action": "allow"},
-                            ],
+                request = SubagentTaskRequest.from_tool_input(task)
+            except Exception as exc:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "subagent": "opencode",
+                        "status": "failed",
+                        "error": {
+                            "error_code": "SUBAGENT_TASK_INVALID",
+                            "message": str(exc)[:1000],
+                            "retryable": False,
                         },
-                    )
-                    create_resp.raise_for_status()
-                    session_info = create_resp.json()
-                    session_id = str(session_info.get("id") or "").strip()
-                    if not session_id:
-                        return f"Error: opencode session creation returned no id.\n{session_info}"
-
-                    body: dict[str, Any] = {
-                        "agent": agent_name,
-                        "system": background_prompt,
-                        "parts": [{"type": "text", "text": task_prompt}],
-                    }
-                    if model and "/" in model:
-                        provider_id, model_id = model.split("/", 1)
-                        body["model"] = {"providerID": provider_id, "modelID": model_id}
-
-                    prompt_resp = await client.post(
-                        f"{base_url}/session/{session_id}/message",
-                        params={"directory": project_root},
-                        json=body,
-                    )
-                    prompt_resp.raise_for_status()
-                    result = extract_text(prompt_resp.json())
-
-                if len(result) > 6000:
-                    result = result[-6000:]
-                return f"opencode completed. sessionID={session_id}\n{result}"
-            except asyncio.TimeoutError:
-                return "Error: opencode execution timed out after 240 seconds."
-            except Exception as e:
-                return f"Error: failed to execute opencode child session: {str(e)}"
-            finally:
-                await stop_opencode_process(proc)
+                    },
+                    ensure_ascii=False,
+                )
+            runner = OpenCodeSubagentRunner(settings.BASE_DIR)
+            result = await runner.run(request)
+            return result.to_tool_observation()
         self.tools.append(Tool(
             name="delegate_to_opencode",
             func=lambda x: "This tool only supports async execution.",
             coroutine=delegate_to_opencode_tool,
             description=(
                 "Delegate a complex coding, repository, shell, or filesystem task to the locally "
-                "installed OpenCode child agent. Input can be plain text or JSON like "
-                "{\"task\":\"...\",\"agent\":\"build\"}. When a file artifact is requested, "
+                "installed OpenCode child agent. Prefer JSON input with task, context_summary, "
+                "acceptance_criteria, permission_profile (read_only or project_write), agent, "
+                "and optional model. Plain text remains supported. When a file artifact is requested, "
                 "OpenCode must write it under data/opencode_outputs/ and return "
                 "OPENCODE_ARTIFACT_PATH for parent verification."
             )
         ))
-        self._delegate_to_opencode_tool = delegate_to_opencode_tool
-
         async def generate_compliance_report_tool(input_text: str) -> str:
             """
             深度研究工具：生成完整的合规建议书或深度研判报告。
@@ -1907,42 +1742,6 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
 
         return final_prompt
 
-    def _should_delegate_to_opencode(self, user_input: str, session_id: str) -> bool:
-        text = (user_input or "").strip()
-        lower_text = text.lower()
-        if "opencode" in lower_text:
-            return True
-
-        previous = self._opencode_context_by_session.get(session_id, "")
-        if not previous:
-            return False
-
-        follow_up_markers = [
-            "随便",
-            "你自己决定",
-            "继续",
-            "让他",
-            "子智能体",
-            "你不是opencode",
-            "不是opencode",
-            "它来做",
-            "他来做",
-            "读取",
-            "读一下",
-        ]
-        return len(text) <= 80 and any(marker in text for marker in follow_up_markers)
-
-    def _build_opencode_followup_task(self, user_input: str, session_id: str) -> str:
-        previous = self._opencode_context_by_session.get(session_id, "")
-        if previous and "opencode" not in (user_input or "").lower():
-            return (
-                "Continue the previous OpenCode delegation request.\n"
-                f"Previous request: {previous}\n"
-                f"Latest user follow-up: {user_input}\n"
-                "If the user asks you to decide, choose a useful small file artifact and create it."
-            )
-        return user_input
-
     @staticmethod
     def _extract_customs_intake(user_input: str) -> dict[str, Any]:
         text = str(user_input or "")
@@ -2046,54 +1845,6 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
                 + ",".join(sorted(set(mismatches)))
             )
 
-    def _verify_opencode_artifact(self, opencode_result: str) -> str:
-        match = re.search(r"OPENCODE_ARTIFACT_PATH:\s*(.+)", opencode_result or "")
-        if not match:
-            return ""
-
-        rel_path = match.group(1).strip().strip('"').strip("'")
-        rel_path = rel_path.replace("\\", "/").lstrip("./")
-        project_root = os.path.abspath(os.getcwd())
-        data_root = os.path.abspath(os.path.join(project_root, "data"))
-        abs_path = os.path.abspath(os.path.join(project_root, rel_path))
-
-        if not (abs_path == data_root or abs_path.startswith(data_root + os.sep)):
-            return f"主智能体验证失败：opencode 返回的路径不在 data/ 目录内：{rel_path}"
-        if not os.path.exists(abs_path):
-            return f"主智能体验证失败：没有找到 opencode 返回的文件：{rel_path}"
-
-        size = os.path.getsize(abs_path)
-        try:
-            with open(abs_path, "r", encoding="utf-8") as f:
-                content = f.read(4000)
-            suffix = "\n...（内容较长，仅展示前 4000 字符）" if size > len(content.encode("utf-8", errors="ignore")) else ""
-            return (
-                f"主智能体已读取验证：{rel_path}（{size} bytes）\n\n"
-                f"文件内容：\n{content}{suffix}"
-            )
-        except UnicodeDecodeError:
-            return f"主智能体已验证文件存在：{rel_path}（{size} bytes，非 UTF-8 文本文件）"
-
-    def _expects_opencode_artifact(self, task: str) -> bool:
-        text = (task or "").lower()
-        markers = [
-            "文件",
-            "写入",
-            "创建",
-            "生成",
-            "保存",
-            "读取",
-            "file",
-            "artifact",
-            "read",
-            "write",
-            "create",
-            "generate",
-            "produce",
-            "save",
-        ]
-        return any(marker in text for marker in markers)
-
     async def chat_stream(self, user_input: str, session_id: str = "default_session", language: str = "zh"):
         """
         核心流式分发器
@@ -2131,26 +1882,6 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
             for i, tool in enumerate(self.tools, 1):
                 print(f"  {i}. {tool.name}")
 
-            if self._should_delegate_to_opencode(user_input, session_id):
-                yield f"data: {json.dumps({'type': 'tool_start', 'tool_name': 'delegate_to_opencode', 'content': '正在调用本机 OpenCode 子智能体...'}, ensure_ascii=False)}\n\n"
-                delegated_task = self._build_opencode_followup_task(user_input, session_id)
-                self._opencode_context_by_session[session_id] = delegated_task
-                result = await self._delegate_to_opencode_tool(delegated_task)
-                artifact_verification = self._verify_opencode_artifact(result)
-                if artifact_verification:
-                    result = f"{result}\n\n{artifact_verification}"
-                elif self._expects_opencode_artifact(delegated_task):
-                    result = (
-                        f"{result}\n\n"
-                        "主智能体验证失败：OpenCode 没有返回 OPENCODE_ARTIFACT_PATH，"
-                        "因此无法证明文件由子智能体创建。请重新委托并要求它在 "
-                        "data/opencode_outputs/ 下写入文件。"
-                    )
-                yield f"data: {json.dumps({'type': 'tool_end', 'tool_name': 'delegate_to_opencode', 'content': result}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'answer', 'content': result}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-                return
-            
             # 使用动态系统提示词
             dynamic_prompt = self._get_dynamic_system_prompt(self.system_prompt_text)
             if intake_claims:
@@ -2296,7 +2027,21 @@ Boundary: OpenCode may only serve this local automatic customs project. Do not a
                         tool_output = getattr(tool_output, "content", "")
                     # 格式化工具结果（限制长度，避免过长）
                     if isinstance(tool_output, str):
-                        tool_result = tool_output[:2000] + "..." if len(tool_output) > 2000 else tool_output
+                        try:
+                            structured_tool_output = json.loads(tool_output)
+                        except Exception:
+                            structured_tool_output = None
+                        if (
+                            isinstance(structured_tool_output, dict)
+                            and structured_tool_output.get("subagent")
+                        ):
+                            tool_result = tool_output
+                        else:
+                            tool_result = (
+                                tool_output[:2000] + "..."
+                                if len(tool_output) > 2000
+                                else tool_output
+                            )
                     else:
                         tool_result = str(tool_output)[:2000]
                     tool_failed = False
