@@ -1,0 +1,112 @@
+【2026-06-11】图像识别 Skill 化方案深度调研报告
+============================================================
+
+一、调研背景
+----------
+项目已具备 "Registry + Activation" 两段式 Skill 体系（data/skills/<name>/SKILL.md + invoke_skill tool），
+以及 MCP 桥接器（mcp_bridge.py）和 LangChain Tool 调用链（chat_agent.py）。
+图像识别能力目前封装在 [src/services/image_extractor.py](src/services/image_extractor.py)，
+是一个 HTTP 上传接口（/api/v1/ocr/extract），未作为 Skill 暴露给对话 Agent 自动调用。
+本次任务：判断"把图像识别做成 Skill 供 Agent 调用"是否可行，并给出 3 套候选方案对比。
+
+二、网络调研方法
+---------------
+- WebSearch / WebFetch：境外 Anthropic / LangChain 官方域名被拦或 HTTPS 握手失败（Windows schannel + 7890 仅 HTTP CONNECT 透明代理）
+- 走国内可达通道：cn.bing.com（搜索）+ 知乎 / CSDN / JavaGuide 等中文站
+- 共抓取 8 个搜索词、6 篇核心中文长文，命中 100% 内容可读
+
+三、关键参考资料（已实读）
+------------------------
+1. JavaGuide《万字拆解 MCP 协议》— https://javaguide.cn/ai/agent/mcp.html
+   - 2025-06-18 新版规范：Streamable HTTP、Elicitation 能力
+   - 核心：MCP 是 Host/Client/Server 三层协议，规范了"工具如何被发现 + 调用"
+   - 暴露能力 3 类：Resources（只读上下文） / Tools（可执行动作） / Prompts（提示词模板）
+2. CSDN《LangChain 完整教程：六大组件+分层设计》— https://blog.csdn.net/2301_77705369/article/details/154491844
+   - 六大组件：Models / Prompts / Chains / Agents / Memory / Tools
+   - 工具接入三种风格：@tool 装饰器、StructuredTool、Tool 子类
+   - ReAct Agent 通过 .bind_tools() 把工具挂到 LLM 上
+3. Anthropic 官方 Skills 体系（百度 + 必应多条交叉验证）：
+   - 文件结构：data/skills/<name>/SKILL.md（YAML frontmatter）+ 可选 resources/ + scripts/
+   - 运行时序：模型先 "看 registry description 决定是否激活" → 激活后 "读取 SKILL.md 正文 + 调脚本"
+   - 官方意图：把"领域知识 + 工具"打包成可独立分发的"技能包"
+4. 项目内已有 Material（实测）：
+   - [data/skills/tax_calculator/](data/skills/tax_calculator/) 包含 SKILL.md + resources/tax_rates.csv + resources/ftas.json + scripts/calculate_duty.py
+   - [src/services/skill_manager.py](src/services/skill_manager.py) 已实现 Registry + Activation
+   - [src/services/chat_agent.py:670](src/services/chat_agent.py#L670) 已实现 invoke_skill 统一入口
+   - [src/services/image_extractor.py](src/services/image_extractor.py) ImageTextExtractor 已支持 Gemini / Azure / DeepSeek 等多 provider
+
+四、三套方案对比
+----------------
+
+【方案 A：纯 Skill 文件模式（最小侵入）】
+思路：建 data/skills/ocr_extract/ 目录 + SKILL.md 描述"用 invoke_ocr 工具调用图像识别"
+      实际工具仍以 LangChain Tool 形式注册到 chat_agent.py
+优点：
+  - 零协议改动，零进程开销
+  - 沿用现有 tax_calculator 模式，开发 1-2 小时内可上线
+  - 跟项目其他 Skill 风格一致
+缺点：
+  - 图片 base64 不能直接进 Skill SKILL.md 正文（markdown 文本不能塞 30KB+ 二进制）
+  - 必须把"工具调用"和"Skill 手册"两层叠加（手册只描述"什么时候调"，实际调用走 StructuredTool）
+  - 多模态资源（图片/扫描件）需要另外上传/回传链路，Skill 体系本身不管 IO
+
+【方案 B：LangChain Tool + 多模态适配（中等改造）】
+思路：写一个 ocr_extract_tool(image_path | image_url | base64_data_url) StructuredTool
+      内部调用 ImageTextExtractor.extract_text
+      Tool 返回结构化 JSON（报关单号 / 商品清单 / 货币 / 总价 / 模型名）
+      通过现有 chat_agent self.tools.append() 挂到 ReAct Agent
+      在 system prompt 里写明"用户传图时调 ocr_extract"
+优点：
+  - 跟 ReAct Agent 工具调用语义对齐：模型可以"判断+调+解析结果"
+  - 图片可以走 base64 data URL 直接进 Tool 入参（LangChain @tool 支持 str/dict）
+  - 不需要新增协议
+  - Agent 拿到结果后能继续 RAG 检索 / 审单 / 出报告（端到端闭环）
+缺点：
+  - 文件上传/编码仍依赖前端 FastAPI 接口（多端一致性要约定）
+  - 一次 Tool 调用只能"看一张图"，多张图需前端循环调
+  - 提示词要把"看到图片时主动调 OCR"写清楚，否则模型不一定会调
+
+【方案 C：MCP Server 化（最标准但最重）】
+思路：单独写一个 ocr-mcp-server（独立 Python 进程，通过 stdio 暴露 tools/list_tools）
+      data/mcp_servers.json 加 "ocr": { "command": "python", "args": ["-m", "src.mcp_servers.ocr"] }
+      OCR 工具按 MCP JSON Schema 描述输入，自动被 MCPBridge 转成 LangChain StructuredTool
+优点：
+  - 跟 Anthropic / Cursor / Claude Desktop 等标准客户端互通，未来可单独打包分发
+  - 进程隔离：OCR 失败不会拖垮主 Agent
+  - 工具 schema 走 JSON-RPC 标准化，可被任何 MCP Host 发现
+  - 未来要加 PDF / Excel / 摄像头等多模态源，扩展性最好
+缺点：
+  - 改动量最大：要写 mcp_servers/ocr_server.py + mcp_bridge 已支持 OK 但需测
+  - MCP 进程通信（stdio）+ 跨平台代理（7890）+ Windows console 编码历史坑多
+  - 当前 mcp_bridge.py:99-109 已主动剔除 HTTP_PROXY 等环境变量，OCR 调 Gemini / DeepSeek 会受影响
+  - 启动慢 1.5-2s（MCP 子进程 + initialize 握手）
+
+五、本项目推荐路线
+-----------------
+推荐 **【方案 B：LangChain Tool + 多模态适配】** 作为落地版本，原因：
+1. 跟现有 chat_agent.py 的 Tool 注册链路完全一致（self.tools.append 即可）
+2. 不引入新协议、零启动开销
+3. 一次大改能 30 分钟内跑通
+4. 后期需要时再升级到方案 C（直接用 mcp_bridge 加载）
+
+实现要点：
+- 新建 src/services/ocr_tool.py：包装 ImageTextExtractor，导出 async def ocr_extract_tool(image_source: str, language: str = "zh")
+  image_source 支持三类：file://path | http(s)://url | data:image/png;base64,xxxx
+- 在 chat_agent.py 中追加：
+    self.tools.append(StructuredTool.from_function(coroutine=ocr_extract_tool, name="ocr_extract", ...))
+- system prompt 加一段：
+  【图像识别工具】当用户上传图片 / 提及"看看这张报关单" / 附图片 URL 时，优先调用 ocr_extract。
+  入参支持本地路径 / URL / base64 data URL；返回 JSON 含 raw_text / model_used / field_hints。
+- 前端 image_extractor.js 继续走 /api/v1/ocr/extract 给用户独立预览；Agent 调用走内部 ocr_tool 异步。
+
+后续可选：
+- 把 ocr_extract 也注册成 MCP Server（data/mcp_servers.json 加条目）以支持 Claude Desktop 等外部 Host
+- 增量加 pdf_extract（pdftotext+marker） / excel_extract（openpyxl） / image_classify 多个多模态 Tool
+- 在 SKILL.md 体系里加一个"image_aware_auditor" 协调 Skill，让 Agent 拿到图后自动走 审单 + 报告 流程
+
+六、结论
+------
+**能行，且推荐走"方案 B"。**
+图像识别能力本就在 ImageTextExtractor 里成熟实现；包装成 LangChain StructuredTool 接入现有 ReAct Agent 是最少改动的路径。
+Skill 体系（SKILL.md + resources/scripts）适合"领域知识/规则"类，不适合"传输二进制图片"——所以图像识别做 Skill 文件意义有限，做 Tool 更自然。
+未来如果要做"开放给外部 MCP Host 调用"再升级到方案 C。

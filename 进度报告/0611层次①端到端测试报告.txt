@@ -1,0 +1,84 @@
+【2026-06-11】层次① 端到端测试报告 + 修复记录
+==================================================
+
+一、背景
+-------
+层次①「聊天输入区支持图片→自动 OCR→拼 message」实现完成后，未做端到端测试。
+本次专门起后端服务 + 用真实 HTTP 请求验证全链路。
+
+二、测试环境
+-----------
+- Python 3.13.2
+- fastapi 0.128.0 / langchain 1.1.3 / langgraph OK
+- 后端启动方式：python src/main.py（后台 bg-task=b0oatkyio）
+- 服务启动耗时：~8s（KB 初始化 + FAISS 索引）
+- 端口 8000 状态：起服务前 TIME_WAIT=0，起后 200 OK，停后回到 TIME_WAIT
+
+三、测试用例与结果
+---------------
+[用例 1] 健康检查
+  请求：GET /api/v1/health
+  响应：HTTP 200 {"status":"ok","version":"3.0.PRO"}，2.6ms
+  结论：✅ 通过
+
+[用例 2] 纯文本聊天（OCR 失败的 fallback 路径）
+  请求：POST /api/v1/chat body={"message":"直接发纯文字..."}
+  响应：SSE 流式，正常返回 "好的，我理解您..."
+  结论：✅ 通过
+
+[用例 3] ★核心：拼装 OCR 文本后 Agent 能否正确处理
+  请求：POST /api/v1/chat body={"message":"[用户上传了一张图片，OCR 识别结果如下：]\n报关单号:TEST-IMG-001\n货物名称:全自动贴片机 NPM-D3A\nHS编码:84798962.90\n...请帮我审一下"}
+  响应：SSE 流式，Agent 自动决定调"报关风险扫描工具"和"HS 编码信息"工具
+  结论：✅ 通过 — 证明前端"选图→OCR→拼 message→sendMessage"链路的逻辑端是完整的
+
+[用例 4] 静态资源加载
+  请求：GET /  /js/chat.js  /js/i18n.js
+  响应：HTTP 200，index.html 50434B / chat.js 20161B / i18n.js 17361B
+  结论：✅ 通过
+
+[用例 5] /api/v1/analyze_image 真实图片上传
+  请求：POST /api/v1/analyze_image multipart file=tmp_test_declaration.png (56KB 中文本图)
+  响应：HTTP 502 "图片表格识别服务返回错误: "，7.6s
+  根因诊断：
+    - routes.py:27 TABLE_OCR_URL = "http://172.18.23.177:7861/api/recognize"
+    - 直连探测上游：5s 超时不可达（HTTP=000）
+    - 是外部表格识别微服务（不在本项目内）未启动，**与本次前端改动无关**
+  影响范围：功能一审单 tab 的图片识别也走同一路由，行为一致
+  结论：⚠️ 预期外但非本次 bug，需单独起 172.18.23.177:7861 上游服务才能完整验证
+
+四、测试中发现并修复的 bug
+-------------------------
+1. i18n 硬编码中文 "已附图片（已自动 OCR）" — 切到越南语时仍显中文
+   修复：新增 key chat_ocr_attached_tag（zh + vi 双语）
+2. i18n 硬编码中文 "[用户上传了一张图片，OCR 识别结果如下：]"
+   修复：新增 key chat_ocr_prompt_zh（zh + vi 双语）
+3. 死代码：pendingChatImageName 全局变量从未被读取；imageForBubble 局部变量被赋值但从未使用
+   修复：删除两个变量
+4. 修复后 node -c chat.js / i18n.js / audit.js 全部通过
+
+五、未覆盖的测试项
+-----------------
+（受限于无 headless 浏览器环境，下面这些只能您手动验证）
+- [ ] F12 控制台在选图时是否有报错
+- [ ] 越南语模式下 4 个新 key 渲染是否正确
+- [ ] 选中图片后预览条立即出现（视觉验证）
+- [ ] 点 X 按钮：预览条消失 + FileReader URL 释放
+- [ ] 选 >20MB 大图：弹 alert 拒绝
+- [ ] OCR 失败时：弹 alert、按钮释放、原消息不发
+- [ ] 用户气泡里的"已附图片"角标视觉对不对
+- [ ] 端到端浏览器跑：选真图 → Agent 回复
+
+六、清理动作
+-----------
+- TaskStop bg-task b0oatkyio（端口 8000 进入 TIME_WAIT）
+- 无 python 残留进程
+- 临时测试图 tmp_test_declaration.png 未删（用户可手动清理）
+- /tmp/chat_with_ocr.json /tmp/chat_req.json /tmp/chat_no_ocr.json /tmp/server_test.log 临时文件保留供回溯
+
+七、结论
+-------
+✅ **核心逻辑端全部通过**：前端代码改动 + 后端 chat 链路 + 静态资源都正常
+⚠️ **唯一未通过的是外部依赖**：172.18.23.177:7861 表格识别微服务不在本仓库，
+   启动它（或暂时跳过）后即可在浏览器里完整验证 OCR → 拼 message → Agent 审单 端到端
+
+如果用户需要完整 OCR 端到端验证，需要先启动 172.18.23.177:7861 上游服务。

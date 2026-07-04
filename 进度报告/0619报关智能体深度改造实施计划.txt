@@ -1,0 +1,459 @@
+【2026-06-19】报关智能体深度改造实施计划（先计划、后实施）
+============================================================
+
+一、总体策略
+-----------
+
+本次深度改造采用“旁路新增、逐步接管、随时回退”的方式，不先拆现有核心代码。
+
+现有 /api/v1/*、web/ 前端、CustomsChatAgent、RiskAnalysisOrchestrator、
+ComplianceReporter、TABLE_OCR_URL 和 data/exports 第一阶段全部保留。
+
+新增 /api/agent/v1/* 中间层和标准协议对象，先把旧能力包装起来；
+只有在新链路通过契约测试和端到端测试后，才逐步把旧入口切到新服务。
+
+核心原则：
+
+1. 先补测试和观测，再改核心行为。
+2. 先定义稳定数据模型，再增加接口。
+3. 先做适配器，不直接重写 chat_agent.py 和 routes.py。
+4. 先打通文本、文件和 Run，再扩展复杂视觉能力。
+5. 正式文件生成使用确定性模板渲染，不使用生成式模型直接修改数字和表格。
+6. 每阶段必须能独立回退到现有 /api/v1/*。
+
+
+二、第一批改动：保护现有能力
+-------------------------
+
+这是最先实施的阶段，目标不是增加功能，而是建立安全改造基础。
+
+2.1 建立现有接口契约测试
+
+- 固定 /api/v1/chat 请求和现有 SSE 事件样例。
+- 固定 /api/v1/analyze 的 init、step_start、step_result、complete。
+- 固定 /api/v1/analyze_image 成功、空结果、502、超时行为。
+- 固定 /api/v1/generate_report 和 /downloads 文件行为。
+- 固定 /api/v1/query/declaration/{entry_id} 的 Mock 行为。
+- 固定批量任务创建和进度查询格式。
+
+2.2 建立端到端烟测
+
+- 纯文本聊天。
+- 上传图片，OCR 成功/失败降级。
+- OCR 文本触发审单。
+- 报告生成并下载文件。
+- Mock 单号查询并审单。
+- 服务重启后健康检查。
+
+2.3 增加特性开关
+
+- AGENT_V1_ENABLED：是否启用新中间层。
+- AGENT_V1_USE_NEW_VISION：是否启用新视觉服务。
+- AGENT_V1_USE_PLATFORM_FILES：是否上传平台文件中心。
+- AGENT_V1_USE_NEW_ORCHESTRATOR：是否启用新编排器。
+
+默认全部关闭，现有系统行为不变。
+
+2.4 第一阶段验收
+
+- 现有接口和前端行为没有变化。
+- 契约测试能检测 SSE 字段、错误码或文件行为的回归。
+- 新功能可以通过环境变量关闭。
+
+
+三、第二批改动：建立统一领域模型
+-----------------------------
+
+先建立数据模型，不接管业务。
+
+3.1 智能体协议模型
+
+- SessionRef
+- Run
+- Event
+- Attachment
+- Output
+- AgentError
+- Capability
+
+3.2 文档视觉模型
+
+- DocumentResult
+- PageResult
+- TextBlock
+- TableResult
+- CellResult
+- FieldEvidence
+- ValidationIssue
+- TemplateDefinition
+- TemplateFieldMapping
+
+3.3 报关业务模型
+
+- DeclarationData
+- DeclarationItem
+- SupportingDocument
+- AuditResult
+- RiskFinding
+- RegulationCitation
+- CustomsProcessState
+
+3.4 约束
+
+- 模型必须可 JSON 序列化。
+- 所有对象带 schema_version。
+- 字段新增保持向前兼容。
+- 不允许在协议对象中返回 Windows 本地路径。
+- 文件、图片只使用 file_id/output_id/URL 引用。
+
+3.5 第二阶段验收
+
+- 示例 JSON 可通过模型校验。
+- 当前 OCR、审单和报告结果可以转换为统一对象。
+- 模型与 FastAPI 路由、具体 LLM Provider 解耦。
+
+
+四、第三批改动：薄中间层和 Run 生命周期
+-------------------------------------
+
+4.1 新增接口
+
+- POST /api/agent/v1/runs
+- GET /api/agent/v1/runs/{run_id}
+- GET /api/agent/v1/runs/{run_id}/events
+- POST /api/agent/v1/runs/{run_id}/cancel
+- GET /api/agent/v1/capabilities
+- GET /api/agent/v1/health
+
+4.2 Run 服务
+
+- request_id 幂等。
+- queued/running/waiting_external/completed/partially_completed/failed/cancelled。
+- 同一 session 默认串行。
+- 记录 started_at、completed_at、warnings、error、outputs。
+
+4.3 Event 服务
+
+- sequence 单调递增。
+- heartbeat。
+- agent_started、status_changed、message_delta、tool_started、tool_progress、
+  tool_finished、output_created、warning 和明确终止事件。
+- Last-Event-ID 断线恢复。
+
+4.4 旧能力适配器
+
+- ChatAdapter -> CustomsChatAgent。
+- AuditAdapter -> RiskAnalysisOrchestrator。
+- OcrAdapter -> 当前 /analyze_image 或 TABLE_OCR_URL。
+- ReportAdapter -> ComplianceReporter。
+- DeclarationAdapter -> DataClient。
+- BatchAdapter -> BatchProcessor。
+
+4.5 第三阶段验收
+
+- 平台只调 /api/agent/v1/* 即可完成文本聊天和审单。
+- 新接口失败时可以关闭开关回到旧接口。
+- 普通 Run 必须有明确 agent_completed/agent_failed。
+
+
+五、第四批改动：附件、文件中心和 Output
+-------------------------------------
+
+5.1 Attachment 下载
+
+- 支持平台 file_id + 临时 download_url。
+- 校验 MIME、大小、sha256 和有效期。
+- 下载到按 run_id 隔离的临时目录。
+- Run 结束后清理。
+
+5.2 Output Registry
+
+- 统一管理 document、image、spreadsheet、structured_data、table、archive。
+- 记录 output_id、来源工具、来源附件、MIME、大小、校验值和状态。
+
+5.3 平台文件中心适配器
+
+- 上传生成的 Word/PDF/Excel/图片。
+- 返回 platform_file_id。
+- 上传失败时重试。
+- 平台不可用时使用智能体临时托管和 TTL。
+
+5.4 兼容现有导出
+
+- 将 data/exports 和 /downloads 包装为 Output。
+- 不立即删除原下载地址。
+
+5.5 第四阶段验收
+
+- 报告文件能产生 output_created。
+- 平台可通过 platform_file_id 下载。
+- 文件中心故障时能返回临时文件或 partially_completed。
+
+
+六、第五批改动：统一视觉服务基础
+---------------------------------
+
+6.1 建立 VisionBackend 抽象
+
+- LegacyTableOcrBackend：当前 TABLE_OCR_URL。
+- LocalVisionBackend：当前 ImageExtractor。
+- SpecializedVisionBackend：未来专用模型。
+- MockVisionBackend：稳定测试。
+
+6.2 统一输入输出
+
+- 输入：Attachment、document_type、language、requested_schema。
+- 输出：DocumentResult、TableResult、FieldEvidence、model_used、warnings。
+
+6.3 路由与降级
+
+- 根据文档类型、模型能力和配置选择 Backend。
+- 主 Backend 失败后按策略切换备用。
+- 不允许备用模型静默改变字段语义。
+- 所有结果标记 model_used、backend、prompt_version。
+
+6.4 兼容旧接口
+
+- /api/v1/analyze_image 逐步改为调用 VisionService。
+- 对外仍保留原 text/model/format/session_id 返回字段。
+
+6.5 第五阶段验收
+
+- 当前 OCR 链路可通过统一服务调用。
+- 502、空结果、低置信度和降级状态可区分。
+- 切回 Legacy Backend 后行为与当前一致。
+
+
+七、第六批改动：图片表格转 JSON/XLSX
+-----------------------------------
+
+7.1 图像预处理
+
+- 方向校正、透视校正、去噪、增强和分页。
+
+7.2 表格结构恢复
+
+- 表格区域检测。
+- 行列和单元格检测。
+- 合并单元格 row_span/column_span。
+- 单元格 bbox 和来源页。
+
+7.3 OCR 与语义映射
+
+- 单元格级 OCR。
+- 表头识别。
+- 报关字段映射。
+- 数字、金额、币种和日期标准化。
+
+7.4 校验与复核
+
+- 每个字段和单元格置信度。
+- 关键字段提高阈值。
+- 低置信度标注图。
+- waiting_review 状态和人工修订数据回写。
+
+7.5 输出
+
+- structured_data JSON。
+- 可编辑 XLSX。
+- 表格结构预览图。
+- validation_report。
+
+7.6 第六阶段验收
+
+- 多行、多列、合并单元格可稳定恢复。
+- XLSX 内容与 JSON 一致。
+- 关键字段能追溯到原图坐标。
+- 低置信度不会静默进入正式结果。
+
+
+八、第七批改动：模板填写和报关单生成
+-----------------------------------
+
+8.1 模板注册和版本管理
+
+- template_id + version。
+- Excel Sheet/Cell/Range 映射。
+- DOCX 内容控件或书签映射。
+- PDF 字段或 page/bbox 映射。
+- 图片背景 page/bbox 映射。
+
+8.2 确定性渲染
+
+- 保留 Excel 公式、格式、合并单元格和打印区域。
+- 控制字体、对齐、自动缩放和换行。
+- 只有图片模板时使用原图背景 + 文字层。
+- 不使用生成式图像编辑修改正式数字或表格。
+
+8.3 输出
+
+- 填写后 XLSX/DOCX。
+- 正式 PDF。
+- PNG 预览图。
+- 风险/置信度标注图。
+- validation_report。
+
+8.4 审核门槛
+
+- 关键字段低置信度必须人工确认。
+- 模板版本和数据版本写入审计记录。
+- 输出值与结构化输入做逐字段回查。
+
+8.5 第七阶段验收
+
+- 同一数据重复渲染结果稳定。
+- Excel/PDF/PNG 内容一致。
+- 模板升级不破坏旧版本历史文件。
+- 每个填写字段都可追溯到输入数据。
+
+
+九、第八批改动：Agent 工具编排深度改造
+-------------------------------------
+
+此阶段才开始较大范围调整 chat_agent.py，避免过早触碰最复杂模块。
+
+9.1 工具标准化
+
+- declaration_query
+- document_extract
+- table_extract
+- template_fill
+- declaration_audit
+- regulation_search
+- tax_calculate
+- hs_code_advise
+- report_generate
+- output_publish
+
+9.2 编排规则
+
+- 有图片先识别，再根据用户意图审单或生成表格。
+- 有 entry_id 先查数据。
+- 要求正式报关单时必须经过校验和复核门槛。
+- 要求报告时生成报告并发布 Output。
+- OCR/视觉失败时不得伪造字段。
+
+9.3 Prompt 和策略
+
+- 系统提示只描述能力和边界，不承载大段业务数据。
+- OCR/结构化数据通过工具结果传递。
+- 提示词、模板和规则全部版本化。
+
+9.4 第八阶段验收
+
+- 文本、图片、表格、模板填写和报告能由一个 Agent 入口完成。
+- 工具调用顺序可解释。
+- 失败和人工复核状态不会被模型绕过。
+
+
+十、第九批改动：Mock 与真实报关流程
+-----------------------------------
+
+10.1 建立 DeclarationGateway
+
+- MockDeclarationConnector。
+- PlatformDeclarationConnector。
+- 后续真实海关或企业系统 Connector。
+
+10.2 流程状态机
+
+- draft
+- submitted
+- auditing
+- supplement_required
+- manual_review
+- rejected
+- approved
+- released
+
+10.3 Mock 场景
+
+- 正常放行。
+- HS 风险。
+- 价格异常。
+- 单证不一致。
+- OCR 低置信度要求补充资料。
+- 外部系统超时和重复提交。
+
+10.4 第九阶段验收
+
+- Mock 和 Production 数据有明确 data_source。
+- 切换 Connector 不改变 Agent 协议。
+- 流程状态和操作均可审计。
+
+
+十一、第十批改动：生产化
+-----------------------
+
+- 平台服务鉴权、租户隔离和权限校验。
+- 限流、并发、队列和超时。
+- Run/Event 持久化和断线恢复。
+- trace_id、指标、日志和告警。
+- 文件病毒扫描、敏感信息脱敏和保留策略。
+- 模型成本和调用量统计。
+- 压测、故障注入、备份恢复和部署回滚。
+
+
+十二、三人并行分工
+-----------------
+
+人员 A：视觉与文档生成
+
+- 第五至第七批。
+- VisionBackend、图片转 Excel、模板填写、PDF/PNG 和复核机制。
+
+人员 B：Agent 和协议
+
+- 第二、第三、第八批。
+- 领域模型、Run/Event、Agent 工具、Prompt 和编排。
+
+人员 C：集成、文件、Mock 和质量保障
+
+- 第一、第四、第九、第十批。
+- 契约测试、平台文件中心、DeclarationGateway、部署和监控。
+
+公共规则：
+
+- A/B/C 不直接同时修改同一个核心文件。
+- routes.py 只由中间层负责人统一合并。
+- chat_agent.py 只在第八阶段集中改造。
+- 统一模型和协议变更先评审，再进入各自模块。
+
+
+十三、推荐里程碑
+-----------------
+
+M0：当前基线提交 + 契约测试完成。
+M1：统一模型和 /api/agent/v1/runs 可用于文本聊天、审单。
+M2：Attachment、Output、平台文件中心和报告文件打通。
+M3：统一视觉服务接管现有 OCR。
+M4：图片表格转 JSON/XLSX + 人工复核。
+M5：模板填写生成 XLSX/PDF/PNG。
+M6：Agent 全能力编排 + Mock 报关流程。
+M7：生产化和平台正式联调。
+
+
+十四、第一轮实际开发清单
+-----------------------
+
+基线提交完成后，第一轮只做以下内容：
+
+1. 建立契约测试目录和现有接口样例。
+2. 定义 Run/Event/Attachment/Output/Error Pydantic 模型。
+3. 新增独立 agent_routes，不修改原 routes 行为。
+4. 建立最小 RunStore 和 EventEmitter。
+5. 通过 ChatAdapter 包装现有 /chat。
+6. 通过 AuditAdapter 包装现有 /analyze。
+7. 完成文本聊天和审单的 agent_started/message_delta/agent_completed。
+8. 加入 AGENT_V1_ENABLED，默认关闭。
+
+第一轮明确不做：
+
+- 不改 ImageExtractor 内部模型调用。
+- 不重写 chat_agent.py。
+- 不接真实平台文件中心。
+- 不实现图片转 Excel。
+- 不实现模板填写。
+- 不删除任何旧接口。
+
+第一轮通过后，才进入 Attachment、Output 和视觉服务改造。

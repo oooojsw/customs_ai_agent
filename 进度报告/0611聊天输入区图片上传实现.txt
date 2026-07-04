@@ -1,0 +1,75 @@
+【2026-06-11】聊天输入区图片上传（层次①）实现完成
+====================================================
+
+一、目标
+-------
+在「咨询」模块（功能二）的聊天输入区增加"上传图片"按钮，用户选图后系统自动 OCR（走现有 /api/v1/analyze_image），
+把识别结果拼到 message 中再发给 Agent。零后端改动，1 小时内可上线。
+
+二、改动文件
+-----------
+1. web/index.html（chat tab 输入区）
+   - 新增 <input type="file" id="chatImageInput" accept="image/*" class="hidden" onchange="handleChatImageSelection(this)">
+   - 新增 <button id="chatImageBtn"> 图标 fa-image，点击触发隐藏 input
+   - 新增预览条 <div id="chatImagePreviewBar" class="hidden">，含 12×12 缩略图、文件名、"将随消息一起自动 OCR 识别"提示、X 关闭按钮
+   - 调整父容器从 flex 改为 flex gap-3 items-end 包住"图片按钮 + textarea + 发送按钮"
+
+2. web/js/i18n.js
+   - zh 区段：新增 4 个 key
+       chat_image_upload: '上传图片（自动 OCR）'
+       chat_image_will_ocr: '将随消息一起自动 OCR 识别'
+       chat_ocr_in_progress: '正在识别图片...'
+       chat_ocr_empty: '图片识别结果为空'
+   - vi 区段：对应 4 个越南语翻译
+       chat_image_upload: 'Tải ảnh lên (tự động OCR)'
+       chat_image_will_ocr: 'Sẽ tự động OCR cùng tin nhắn'
+       chat_ocr_in_progress: 'Đang nhận dạng hình ảnh...'
+       chat_ocr_empty: 'Kết quả nhận dạng hình ảnh trống'
+
+3. web/js/chat.js
+   - 新增全局：let pendingChatImage = null; let pendingChatImageName = '';
+   - 新增函数：
+       handleChatImageSelection(input)  → 大小校验（>20MB 拒绝）、暂存 File 对象、渲染预览条
+       clearChatImage()                  → 释放 ObjectURL、清 input、隐藏预览条
+       ocrChatImage(file)                → 调 /analyze_image 拿 text（兼容 text/content/context 三种字段）
+   - 改 sendMessage：
+       * 第 1 步：发现 pendingChatImage → 锁发送按钮 + 切换 spinner → await ocrChatImage
+       * 第 2 步：OCR 失败 → 弹 alert、释放按钮、return（不发原消息，避免静默丢图）
+       * 第 3 步：OCR 成功 → clearChatImage + 拼 message
+                   模板：msg = `${原msg}\n\n[用户上传了一张图片，OCR 识别结果如下：]\n${ocrText}`
+       * 用户气泡里把模板标记替换成一个 cyan 小角标 "已附图片（已自动 OCR）"
+       * msg 为空但有图片时也能发（用 OCR 文本当唯一内容）
+
+三、关键设计决策
+---------------
+- OCR 失败不静默吞掉：弹 alert 让用户决定，图片保留在预览条上可重试或移除
+- 大小 20MB 硬限（与 audit.js 一致）
+- 用 ObjectURL 渲染预览（不读 base64，节省内存）
+- 复用 IMAGE_API_URL 常量（config.js 第 9 行已存在），0 新增后端
+- 不动 chat_agent.py / routes.py / image_extractor.py — 走现有链路
+
+四、验证清单
+-----------
+- [x] node -c chat.js / i18n.js / audit.js 全部通过
+- [x] DOM 元素 id 与 JS 函数名一一对应（grep 验证）
+- [ ] 端到端：需要起服务 + 准备一张报关单样图手动验证（用户测试时再跑）
+- [ ] i18n 切换：刷新页面验证越语 label 正确渲染
+
+五、测试方式（用户运行时）
+-----------------------
+1. 启动后端：python src/main.py（端口 8000）
+2. 浏览器打开 http://127.0.0.1:8000
+3. 进入"咨询"模块（功能二）
+4. 点输入区左侧的 📷 按钮 → 选一张报关单图片
+5. 看到预览条出现（含缩略图、文件名、"将随消息一起自动 OCR 识别"）
+6. （可选）在 textarea 输入"帮我看下这张报关单有没有问题"
+7. 点发送 → 发送按钮变 spinner → 等待 1-3s（OCR 耗时）→ 用户气泡显示 + AI 开始流式回复
+8. 测试 X 按钮：选中图片后点 X → 预览条消失
+9. 测试 OCR 失败场景：选 1 张非报关单图片 → 弹"图片识别失败"提示
+
+六、注意事项
+-----------
+- 如果后端 image_config 没启用，会走 .env 默认 Gemini 配 — 跟功能一审单 tab 的图片识别行为一致
+- 不要在前端 base64 编码大图（base64 会增加 33% 体积，浪费带宽）
+- 越南语 label 已加，中越切换在右上角下拉
+- 端口 8000 占用情况：测试前先 netstat -ano | findstr :8000；测试完用 taskkill //F //PID <pid> 清理（按 CLAUDE.md 系统规则第 1 条）
