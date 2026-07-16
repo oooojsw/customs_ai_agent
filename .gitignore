@@ -183,10 +183,7 @@ test_*.py
 !tests/test_*.py
 !tests/**/*_test.py
 
-# 忽略 Docker 相关文件（如果不需要版本控制）
-.dockerignore
-docker-compose.yml
-Dockerfile
+# Docker部署文件属于跨机器运行契约，需要版本控制。
 docker/
 
 # 忽略特定文档文件

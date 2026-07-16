@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  customs-agent:
+    # 指示 Docker Compose 使用当前目录下的 Dockerfile 来构建镜像
+    build: .
+    # 给容器起一个好记的名字
+    container_name: customs-ai-agent-container
+    # 将主机的 8000 端口映射到容器的 8000 端口
+    # 这样您就可以通过 http://localhost:8000 访问服务了
+    ports:
+      - "8000:8000"
+    # 将 .env 文件中的环境变量加载到容器中
+    env_file:
+      - .env
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      KNOWLEDGE_AUTO_INCLUDE_PDFS: "true"
+    # 数据持久化配置，这是至关重要的一步！
+    volumes:
+      # 将本地的 faiss_data 卷挂载到容器内 FAISS 索引的存储路径
+      # 这样即使容器被删除重建，向量索引也不会丢失，避免了每次重启都重建索引
+      - faiss_data:/app/config/faiss_index_local
+      # 将本地的 db_data 卷挂载到容器内 SQLite 数据库文件的位置
+      # 保证您的审计任务数据持久化
+      - db_data:/app/customs_audit.db
+      # Embedding模型单独持久化，容器重建后无需再次下载。
+      - huggingface_cache:/root/.cache/huggingface
+    # 配置容器在退出时自动重启，保证服务的高可用性
+    restart: unless-stopped
+
+# 定义具名卷 (Named Volumes)，由 Docker 统一管理，比绑定挂载更安全、更方便
+volumes:
+  faiss_data:
+  db_data:
+  huggingface_cache:

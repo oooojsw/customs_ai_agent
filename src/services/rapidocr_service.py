@@ -47,7 +47,10 @@ class RapidOCRService:
                     print("[RapidOCR] Using fitz (pymupdf alias) for PDF→image conversion")
                     self.use_pymupdf = True
                 except ImportError:
-                    print("[RapidOCR] pymupdf/fitz not available, will use pdf2image (requires poppler)")
+                    print(
+                        "[RapidOCR] pymupdf/fitz not available, "
+                        "will use pdf2image (requires poppler)"
+                    )
                     print("[RapidOCR] Install: conda run -n llm-sprint pip install pymupdf")
                     self.use_pymupdf = False
 
@@ -122,28 +125,31 @@ class RapidOCRService:
                     pdf_lib_name = "fitz"
 
                 doc = pdf_lib.open(str(pdf_path_obj))
-                images = []
+                page_count = len(doc)
+                print(f"[RapidOCR] Processing {page_count} pages using {pdf_lib_name}")
 
-                for page_num, page in enumerate(doc):
-                    # 渲染页面为图片（zoom=2 相当于 200 DPI）
+                all_text = []
+                for page_num, page in enumerate(doc, 1):
                     pix = page.get_pixmap(matrix=pdf_lib.Matrix(2, 2))
-
-                    # 转换为 numpy 数组（RapidOCR 需要的格式）
-                    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                    image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
                         pix.height, pix.width, pix.n
                     )
-
-                    # 如果是 RGBA，转为 RGB
                     if pix.n == 4:
-                        img = img[:, :, :3]  # 去掉 alpha 通道
+                        image = image[:, :, :3]
                     elif pix.n == 1:
-                        # 灰度图转为 RGB
-                        img = np.stack([img, img, img], axis=2)
+                        image = np.stack([image, image, image], axis=2)
 
-                    images.append(img)
+                    ocr_result, _ = self.ocr(image)
+                    blocks = ocr_result or []
+                    all_text.append(
+                        "\n".join(
+                            block[1] for block in blocks if len(block) >= 2
+                        )
+                    )
+                    if page_num % 5 == 0 or page_num == page_count:
+                        print(f"[RapidOCR] Processed {page_num}/{page_count} pages...")
 
                 doc.close()
-                print(f"[RapidOCR] Converted {len(images)} pages using {pdf_lib_name}")
             else:
                 # 使用 pdf2image（需要 poppler）
                 from pdf2image import convert_from_path
@@ -151,27 +157,19 @@ class RapidOCRService:
 
                 pil_images = convert_from_path(str(pdf_path_obj), dpi=200)
                 # 将 PIL Image 转换为 numpy 数组
-                images = [np.array(img) for img in pil_images]
-
-            print(f"[RapidOCR] Extracting text from {len(images)} pages...")
-            all_text = []
-
-            # 逐页OCR识别
-            for page_num, image in enumerate(images, 1):
-                # RapidOCR返回：(result, metadata)
-                # result格式：[[[x1,y1,x2,y2], text, confidence], ...]
-                ocr_result, _ = self.ocr(image)
-
-                # 提取文本（合并所有识别结果）
-                page_text = []
-                for block in ocr_result:
-                    if len(block) >= 2:
-                        page_text.append(block[1])  # 文本在第二个位置
-
-                all_text.append("\n".join(page_text))
-
-                if page_num % 5 == 0 or page_num == len(images):
-                    print(f"[RapidOCR] Processed {page_num}/{len(images)} pages...")
+                all_text = []
+                for page_num, image in enumerate(pil_images, 1):
+                    ocr_result, _ = self.ocr(np.array(image))
+                    blocks = ocr_result or []
+                    all_text.append(
+                        "\n".join(
+                            block[1] for block in blocks if len(block) >= 2
+                        )
+                    )
+                    if page_num % 5 == 0 or page_num == len(pil_images):
+                        print(
+                            f"[RapidOCR] Processed {page_num}/{len(pil_images)} pages..."
+                        )
 
             # 合并所有页面文本
             markdown_text = "\n\n".join(all_text)
@@ -182,7 +180,10 @@ class RapidOCRService:
             if validate_quality:
                 self._validate_quality(markdown_text, pdf_path_obj.name)
 
-            print(f"[RapidOCR] Completed: {pdf_path_obj.name} ({len(markdown_text)} chars, {processing_time:.1f}s)")
+            print(
+                f"[RapidOCR] Completed: {pdf_path_obj.name} "
+                f"({len(markdown_text)} chars, {processing_time:.1f}s)"
+            )
 
             return markdown_text, processing_time
 

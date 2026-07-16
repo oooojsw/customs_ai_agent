@@ -6,18 +6,20 @@ import platform
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Windows后台进程可能继承GBK输出，模块导入阶段的Unicode日志会使服务崩溃。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # --- 1. 环境策略设置 (必须在导入任何异步库前) ---
 if platform.system() == 'Windows':
     # ✅ 使用 SelectorEventLoop 支持 MCP stdio 通信
     # 同时在 executor 中初始化 KnowledgeBase 避免阻塞
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# --- 1.5. 清理代理环境变量（防止干扰 MCP 连接） ---
-# 注意：必须在导入 src.config.loader 之前清理，因为 loader 会设置代理
-for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
-    if proxy_var in os.environ:
-        print(f"[MCP Fix] 移除代理环境变量: {proxy_var}")
-        del os.environ[proxy_var]
+# MCP 子进程会在 MCPBridge 内单独清理代理。主服务保留代理环境变量，
+# 以便首次部署时能够下载 Embedding 模型并访问外部模型服务。
 
 # --- 2. 路径初始化 (确保项目根目录在首位) ---
 current_file_path = Path(__file__).resolve()

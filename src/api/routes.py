@@ -470,23 +470,22 @@ async def clear_pdf_cache():
         return {"status": "error", "message": str(e)}
 
 @router.post("/pdf/reindex")
-async def rebuild_pdf_index():
+async def rebuild_pdf_index(request: Request):
     """
     重建PDF索引 (强制重新处理所有PDF)
 
     注意：此操作会清除所有PDF缓存并重新处理，耗时较长
 
     Returns:
-        {
-            "status": "success",
-            "message": "后台任务已启动"
-        }
+        SSE重建进度流，与 /index/rebuild 使用相同事件结构。
     """
-    try:
-        # TODO: 实现后台任务队列
-        return {"status": "success", "message": "功能开发中"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    kb = getattr(request.app.state, "kb", None)
+    if not kb:
+        raise HTTPException(status_code=503, detail="知识库服务未就绪")
+    return StreamingResponse(
+        kb.rebuild_index_stream(force_process_pdfs=True),
+        media_type="text/event-stream",
+    )
 
 # ==========================================
 # 8. 知识库索引管理接口
@@ -549,7 +548,8 @@ async def get_index_status(request: Request):
             "progress": kb.progress,
             "file_count": kb.file_count,
             "last_rebuild_time": kb.last_rebuild_time
-        }
+        },
+        "index_health": kb.get_index_health(),
     }
 
 @router.post("/index/cancel")
